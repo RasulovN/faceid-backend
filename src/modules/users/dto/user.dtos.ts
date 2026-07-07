@@ -26,6 +26,13 @@ export class UserListQueryDto extends PaginationDto {
   @IsOptional()
   @IsIn(Object.values(UserRole))
   role?: UserRole;
+
+  /** Bir nechta rol bo'yicha filtr, vergul bilan: roles=COMPANY_OWNER,COMPANY_ADMIN */
+  @ApiPropertyOptional({ example: 'COMPANY_OWNER,COMPANY_ADMIN' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  roles?: string;
 }
 
 export class UpdateUserDto {

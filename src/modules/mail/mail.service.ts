@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import {
   employeeCredentialsTemplate,
+  leadApprovedTemplate,
+  leadRejectedTemplate,
   passwordResetTemplate,
   subscriptionExpiringTemplate,
   verificationEmailTemplate,
@@ -92,5 +94,16 @@ export class MailService {
       `FaceID — Obuna tugashiga ${daysLeft} kun qoldi`,
       subscriptionExpiringTemplate(companyName, daysLeft, endsAt.toISOString().slice(0, 10), payUrl),
     );
+  }
+
+  /** Landing murojaati (lead) tasdiqlanganda — rasmiy tasdiq xati */
+  async sendLeadApproved(to: string, name: string): Promise<void> {
+    const registerUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/register`;
+    await this.send(to, 'FaceID — Murojaatingiz tasdiqlandi', leadApprovedTemplate(name, registerUrl));
+  }
+
+  /** Landing murojaati (lead) rad etilganda — muloyim rad xati */
+  async sendLeadRejected(to: string, name: string): Promise<void> {
+    await this.send(to, 'FaceID — Murojaatingiz bo‘yicha javob', leadRejectedTemplate(name));
   }
 }

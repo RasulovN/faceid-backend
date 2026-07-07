@@ -8,6 +8,7 @@ import { PayrollAdjustment } from '../../entities/payroll-adjustment.entity';
 import { PayrollRecord } from '../../entities/payroll-record.entity';
 import { BonusRule, OvertimeRule, PenaltyRule } from '../../entities/rules.entities';
 import { WorkDay } from '../../entities/work-day.entity';
+import { ScheduleDay } from '../../entities/work-schedule.entity';
 import { AppException } from '../../common/exceptions/app.exception';
 import {
   EmployeeStatus,
@@ -17,10 +18,13 @@ import {
   WorkDayStatus,
 } from '../../common/enums';
 import { Paginated, PaginationDto } from '../../common/dto/pagination.dto';
+import { dateStrInTz } from '../../common/utils/tz.util';
 import { AuditService } from '../audit/audit.service';
+import { scheduledMinutesOf } from '../workdays/workday-calc';
 import { WorkDayService } from '../workdays/workday.service';
 import {
   calcPayroll,
+  CalcWorkDayRow,
   defaultPolicy,
   PayrollCalcResult,
   PayrollPenaltyPolicy,
@@ -39,6 +43,8 @@ interface CompanyPayrollContext {
   bonusRules: BonusRule[];
   holidaySet: Set<string>;
   monthHolidays: string[];
+  /** Kompaniya timezone'idagi bugungi sana — o'tgan kunlarni aniqlash uchun */
+  todayStr: string;
 }
 
 @Injectable()
@@ -106,11 +112,12 @@ export class PayrollService {
   }
 
   private async buildContext(companyId: string, month: string): Promise<CompanyPayrollContext> {
-    const [penaltyRules, bonusRules, overtimeRule, holidays] = await Promise.all([
+    const [penaltyRules, bonusRules, overtimeRule, holidays, company] = await Promise.all([
       this.penaltyRepository.find({ where: { companyId } }),
       this.bonusRepository.find({ where: { companyId, isActive: true } }),
       this.overtimeRepository.findOne({ where: { companyId } }),
       this.holidayRepository.find({ where: { companyId } }),
+      this.companyRepository.findOne({ where: { id: companyId } }),
     ]);
     const holidaySet = new Set(holidays.map((h) => h.date));
     return {
@@ -118,7 +125,57 @@ export class PayrollService {
       bonusRules,
       holidaySet,
       monthHolidays: holidays.map((h) => h.date).filter((d) => d.startsWith(month)),
+      todayStr: dateStrInTz(new Date(), company?.timezone || 'Asia/Tashkent'),
     };
+  }
+
+  /**
+   * Grafik bo'yicha ish kuni bo'lgan, lekin WorkDay yozuvi YO'Q o'tgan kunlarni
+   * ABSENT sifatida sintez qiladi — kelmagan kun ham breakdown'da ko'rinadi va
+   * jarima oladi (yozuv yo'qligi sababli "jimgina to'lab yuborilmaydi").
+   * Bugungi va kelajak kunlar sintez qilinmaydi (kun hali tugamagan).
+   */
+  private synthesizeMissingDays(
+    employee: Employee,
+    month: string,
+    workDays: WorkDay[],
+    scheduleDays: ScheduleDay[],
+    ctx: CompanyPayrollContext,
+  ): CalcWorkDayRow[] {
+    const known = new Set(workDays.map((d) => d.date));
+    const synthetic: CalcWorkDayRow[] = [];
+    const [year, mon] = month.split('-').map(Number);
+    const daysInMonth = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${month}-${String(day).padStart(2, '0')}`;
+      if (dateStr >= ctx.todayStr) break; // faqat o'tgan kunlar
+      if (known.has(dateStr) || ctx.holidaySet.has(dateStr)) continue;
+      // Ishga olinishdan oldingi / bo'shatilgandan keyingi kunlar hisobga olinmaydi
+      if (employee.hiredAt && dateStr < employee.hiredAt) continue;
+      if (employee.firedAt && dateStr > employee.firedAt) continue;
+      const utcDow = new Date(Date.UTC(year, mon - 1, day)).getUTCDay();
+      const dayOfWeek = utcDow === 0 ? 7 : utcDow;
+      const scheduleDay = scheduleDays.find((d) => d.dayOfWeek === dayOfWeek);
+      if (!scheduleDay) continue;
+      const scheduledMinutes = scheduledMinutesOf(scheduleDay);
+      if (scheduledMinutes <= 0) continue;
+      synthetic.push({
+        date: dateStr,
+        // Ta'tildagi xodimning yozuvsiz kunlari ABSENT emas — jarima bo'lmasin
+        status:
+          employee.status === EmployeeStatus.VACATION
+            ? WorkDayStatus.VACATION
+            : WorkDayStatus.ABSENT,
+        scheduledMinutes,
+        workedMinutes: 0,
+        lateMinutes: 0,
+        earlyLeaveMinutes: 0,
+        overtimeMinutes: 0,
+        isExcused: false,
+        excuseReason: null,
+      });
+    }
+    return synthetic;
   }
 
   /** Bitta xodim uchun oy hisobi (saqlamasdan) */
@@ -161,13 +218,19 @@ export class PayrollService {
       };
     }
 
+    // Yozuvsiz o'tgan ish kunlari — ABSENT sifatida sintez (breakdown to'liq bo'ladi)
+    const rows: CalcWorkDayRow[] = [
+      ...workDays,
+      ...(schedule ? this.synthesizeMissingDays(employee, month, workDays, schedule.days, ctx) : []),
+    ];
+
     return calcPayroll({
       salaryType: employee.salaryType,
       salaryAmount: employee.salaryAmount,
       monthExpectedMinutes: stats.expectedMinutes,
       monthWorkingDays: stats.workingDays,
       holidayDates: ctx.monthHolidays,
-      workDays,
+      workDays: rows,
       policy: ctx.policy,
       bonusRules: ctx.bonusRules,
       adjustments: adjustments.map((a) => ({ type: a.type, amount: a.amount, note: a.note })),

@@ -34,8 +34,10 @@ import { RolesModule } from './modules/roles/roles.module';
 import { RulesModule } from './modules/rules/rules.module';
 import { SchedulesModule } from './modules/schedules/schedules.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { SiteAnalyticsModule } from './modules/site-analytics/site-analytics.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { StorageAnalyticsModule } from './modules/storage-analytics/storage-analytics.module';
+import { LeadsModule } from './modules/leads/leads.module';
 import { TariffsModule } from './modules/tariffs/tariffs.module';
 import { UsersModule } from './modules/users/users.module';
 import { WorkDaysModule } from './modules/workdays/workdays.module';
@@ -102,6 +104,8 @@ import { WsModule } from './modules/ws/ws.module';
     StatsModule,
     SettingsModule,
     StorageAnalyticsModule,
+    SiteAnalyticsModule,
+    LeadsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

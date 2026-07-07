@@ -77,6 +77,20 @@ export enum PayrollStatus {
   PAID = 'PAID',
 }
 
+/** Landing'dan kelgan murojaat (lead) bosqichlari — kanban ustunlari */
+export enum LeadStatus {
+  /** Yangi murojaat */
+  NEW = 'NEW',
+  /** Bog'lanildi */
+  CONTACTED = 'CONTACTED',
+  /** Demo ko'rsatildi */
+  DEMO = 'DEMO',
+  /** Tasdiqlangan (mijozga aylantirildi) — email yuboriladi */
+  APPROVED = 'APPROVED',
+  /** Rad etilgan — email yuboriladi */
+  REJECTED = 'REJECTED',
+}
+
 /** Oylikka qo'lda kiritiladigan tuzatish turlari */
 export enum PayrollAdjustmentType {
   /** Avans — oldindan berilgan pul, oylikdan ushlanadi */

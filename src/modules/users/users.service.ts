@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, ILike, In, Repository } from 'typeorm';
 import * as argon2 from 'argon2';
+import { Company } from '../../entities/company.entity';
 import { Role } from '../../entities/role.entity';
 import { User } from '../../entities/user.entity';
 import { AppException } from '../../common/exceptions/app.exception';
@@ -20,12 +21,21 @@ export class UsersService {
   constructor(
     @InjectRepository(User) private readonly userRepository: Repository<User>,
     @InjectRepository(Role) private readonly roleRepository: Repository<Role>,
+    @InjectRepository(Company) private readonly companyRepository: Repository<Company>,
   ) {}
 
   async findAll(query: UserListQueryDto, companyId?: string) {
     const base: FindOptionsWhere<User> = {};
     if (companyId) base.companyId = companyId;
     if (query.role) base.role = query.role;
+    // Bir nechta rol filtri (?roles=A,B) — yagona `role` paramdan ustun turadi
+    if (query.roles) {
+      const valid = query.roles
+        .split(',')
+        .map((r) => r.trim())
+        .filter((r): r is UserRole => (Object.values(UserRole) as string[]).includes(r));
+      if (valid.length > 0) base.role = In(valid) as unknown as UserRole;
+    }
     const where: FindOptionsWhere<User>[] = query.search
       ? [
           { ...base, username: ILike(`%${query.search}%`) },
@@ -39,7 +49,31 @@ export class UsersService {
       take: query.limit,
     });
     const withRoleNames = await this.attachRoleNames(items);
-    return Paginated.of(withRoleNames, total, query);
+    // Superadmin ro'yxatida (kompaniya scope'siz) kompaniya nomlari ham ko'rsatiladi
+    const enriched = companyId ? withRoleNames : await this.attachCompanyNames(items, withRoleNames);
+    return Paginated.of(enriched, total, query);
+  }
+
+  /** Har bir userga companyName biriktiradi (bitta IN so'rov bilan) */
+  private async attachCompanyNames<T extends { companyId?: string | null }>(
+    users: User[],
+    sanitized: T[],
+  ): Promise<(T & { companyName: string | null })[]> {
+    const companyIds = [
+      ...new Set(users.map((u) => u.companyId).filter((id): id is string => !!id)),
+    ];
+    const nameById = new Map<string, string>();
+    if (companyIds.length > 0) {
+      const companies = await this.companyRepository.find({
+        where: { id: In(companyIds) },
+        select: ['id', 'name'],
+      });
+      for (const company of companies) nameById.set(company.id, company.name);
+    }
+    return sanitized.map((u) => ({
+      ...u,
+      companyName: u.companyId ? (nameById.get(u.companyId) ?? null) : null,
+    }));
   }
 
   async update(id: string, dto: UpdateUserDto, actor: RequestUser) {

@@ -92,3 +92,32 @@ export function subscriptionExpiringTemplate(
      ${button(payUrl, 'To‘lovni amalga oshirish')}`,
   );
 }
+
+export function leadApprovedTemplate(name: string, registerUrl: string): string {
+  return layout(
+    'Murojaatingiz tasdiqlandi 🎉',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Assalomu alaykum, <b>${name}</b>!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">FaceID Platformaga qoldirgan murojaatingizni ko‘rib chiqdik va <b style="color:#059669;">tasdiqladik</b>. Jamoamiz siz bilan tez orada bog‘lanadi — tizimni jonli ko‘rsatib beramiz va kompaniyangizga mos tarifni tanlashda yordam beramiz.</p>
+     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;width:100%;">
+       <tr><td style="padding:16px 20px;">
+         <div style="font-size:14px;color:#065f46;line-height:1.7;">
+           ✔ Yuzni tanish orqali avtomatik davomat<br>
+           ✔ Kechikish va qo‘shimcha ish vaqtining aniq hisobi<br>
+           ✔ Oylik hisob-kitob (payroll) — har bir so‘m shaffof
+         </div>
+       </td></tr>
+     </table>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Hoziroq o‘zingiz ham ro‘yxatdan o‘tib, <b>14 kunlik bepul sinov</b> davrini boshlashingiz mumkin:</p>
+     ${button(registerUrl, 'Ro‘yxatdan o‘tish')}`,
+  );
+}
+
+export function leadRejectedTemplate(name: string): string {
+  return layout(
+    'Murojaatingiz bo‘yicha javob',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Assalomu alaykum, <b>${name}</b>!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">FaceID Platformaga qoldirgan murojaatingiz uchun tashakkur. Afsuski, hozirgi bosqichda so‘rovingiz bo‘yicha xizmat taqdim eta olmaymiz.</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Vaziyat o‘zgarsa yoki qo‘shimcha savollaringiz bo‘lsa, shu xatga javob yozishingiz mumkin — jamoamiz albatta ko‘rib chiqadi.</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Hurmat bilan,<br><b>FaceID Platform jamoasi</b></p>`,
+  );
+}

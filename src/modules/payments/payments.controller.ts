@@ -8,7 +8,9 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import { FastifyReply } from 'fastify';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
@@ -23,6 +25,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { PaymeRequest, PaymeService } from './payme.service';
+import { PaymentReceiptService } from './payment-receipt.service';
 import {
   AdminPaymentStateFilter,
   AdminSubscriptionFilter,
@@ -119,6 +122,7 @@ export class PaymentsController {
   constructor(
     private readonly paymeService: PaymeService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly receiptService: PaymentReceiptService,
   ) {}
 
   // ---------- Payme Merchant API (JSON-RPC) ----------
@@ -154,12 +158,54 @@ export class PaymentsController {
     return this.subscriptionsService.paymentStatus(user.companyId!, id);
   }
 
+  @Get('payments/:id/receipt')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.PAYMENTS_READ)
+  @SkipSubscriptionCheck()
+  @ApiOperation({ summary: "To'lov cheki + fiskal (soliq) chek ma'lumoti" })
+  async companyReceipt(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.receiptService.getReceipt(id, user.companyId!);
+  }
+
+  @Get('payments/:id/receipt/html')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.PAYMENTS_READ)
+  @SkipSubscriptionCheck()
+  @SkipEnvelope()
+  @ApiOperation({ summary: "Chop etiladigan chek (HTML) — chek + fiskal chek" })
+  async companyReceiptHtml(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() reply: FastifyReply,
+  ) {
+    const html = await this.receiptService.renderReceiptHtml(id, user.companyId!);
+    void reply.header('Content-Type', 'text/html; charset=utf-8').send(html);
+  }
+
   @Get('admin/payments')
   @ApiBearerAuth()
   @Roles(UserRole.SUPERADMIN)
   @ApiOperation({ summary: "Barcha to'lovlar (?companyId&state=CREATED|PAID|CANCELED&from&to)" })
   async allPayments(@Query() query: AdminPaymentsQueryDto) {
     return this.subscriptionsService.allPayments(query);
+  }
+
+  @Get('admin/payments/:id/receipt')
+  @ApiBearerAuth()
+  @Roles(UserRole.SUPERADMIN)
+  @ApiOperation({ summary: "To'lov cheki + fiskal chek (superadmin)" })
+  async adminReceipt(@Param('id', ParseUUIDPipe) id: string) {
+    return this.receiptService.getReceipt(id);
+  }
+
+  @Get('admin/payments/:id/receipt/html')
+  @ApiBearerAuth()
+  @Roles(UserRole.SUPERADMIN)
+  @SkipEnvelope()
+  @ApiOperation({ summary: "Chop etiladigan chek (HTML) — superadmin" })
+  async adminReceiptHtml(@Param('id', ParseUUIDPipe) id: string, @Res() reply: FastifyReply) {
+    const html = await this.receiptService.renderReceiptHtml(id);
+    void reply.header('Content-Type', 'text/html; charset=utf-8').send(html);
   }
 
   // ---------- Obuna ----------

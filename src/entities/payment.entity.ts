@@ -9,6 +9,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { PaymentProvider } from '../common/enums';
+import type { PaymentFiscalData } from '../modules/payments/payme.types';
 import { Tariff } from './tariff.entity';
 
 const bigintToNumber = { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) };
@@ -71,6 +72,13 @@ export class Payment {
 
   @Column({ type: 'int', nullable: true })
   reason: number | null;
+
+  /**
+   * Payme SetFiscalData orqali kelgan soliq (fiskal) chek ma'lumotlari.
+   * { perform?: FiscalEntry, cancel?: FiscalEntry } — chek turi bo'yicha.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  fiscalData: PaymentFiscalData | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

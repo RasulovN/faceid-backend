@@ -6,6 +6,7 @@ import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { Tariff } from '../../entities/tariff.entity';
 import { BILLING_QUEUE, BillingProcessor } from './billing.processor';
+import { PaymentReceiptService } from './payment-receipt.service';
 import { PaymentsController } from './payments.controller';
 import { PaymeConfig } from './payme.config';
 import { PaymeService } from './payme.service';
@@ -17,7 +18,13 @@ import { SubscriptionsService } from './subscriptions.service';
     BullModule.registerQueue({ name: BILLING_QUEUE }),
   ],
   controllers: [PaymentsController],
-  providers: [PaymeConfig, PaymeService, SubscriptionsService, BillingProcessor],
+  providers: [
+    PaymeConfig,
+    PaymeService,
+    SubscriptionsService,
+    PaymentReceiptService,
+    BillingProcessor,
+  ],
   exports: [PaymeService, SubscriptionsService],
 })
 export class PaymentsModule {}

@@ -8,6 +8,7 @@ import { Subscription } from '../../entities/subscription.entity';
 import { Tariff } from '../../entities/tariff.entity';
 import { CompanyStatus, PaymeState, SubscriptionStatus } from '../../common/enums';
 import { PaymeConfig } from './payme.config';
+import { FiscalEntry, PaymentFiscalData } from './payme.types';
 
 // ---------- Payme protokol turlari ----------
 
@@ -106,6 +107,8 @@ export class PaymeService {
           return { id, result: await this.checkTransaction(params) };
         case 'GetStatement':
           return { id, result: await this.getStatement(params) };
+        case 'SetFiscalData':
+          return { id, result: await this.setFiscalData(params) };
         default:
           return this.error(id, PaymeErrors.METHOD_NOT_FOUND, msg(
             'Metod topilmadi',
@@ -312,6 +315,38 @@ export class PaymeService {
         reason: p.reason,
       })),
     };
+  }
+
+  /**
+   * SetFiscalData — Payme to'lov muvaffaqiyatli bo'lgach soliq (fiskal) chek
+   * ma'lumotlarini yuboradi (PERFORM — sotuv, CANCEL — bekor cheki).
+   * Har bir tur alohida saqlanadi; javob: { success: true }.
+   */
+  async setFiscalData(params: Record<string, any>): Promise<Record<string, unknown>> {
+    const payment = await this.findPaymentByTransactionId(params.id);
+    const type = String(params.type ?? '').toUpperCase();
+    const raw = (params.fiscal_data ?? {}) as Record<string, any>;
+
+    const entry: FiscalEntry = {
+      receiptId: raw.receipt_id != null ? String(raw.receipt_id) : null,
+      statusCode: raw.status_code != null ? Number(raw.status_code) : null,
+      message: raw.message != null ? String(raw.message) : null,
+      terminalId: raw.terminal_id != null ? String(raw.terminal_id) : null,
+      fiscalSign: raw.fiscal_sign != null ? String(raw.fiscal_sign) : null,
+      qrCodeUrl: raw.qr_code_url != null ? String(raw.qr_code_url) : null,
+      date: raw.date != null ? String(raw.date) : null,
+      receivedAt: new Date().toISOString(),
+    };
+
+    const fiscalData: PaymentFiscalData = { ...(payment.fiscalData ?? {}) };
+    if (type === 'CANCEL') fiscalData.cancel = entry;
+    else fiscalData.perform = entry;
+
+    await this.paymentRepository.update({ id: payment.id }, { fiscalData });
+    this.logger.log(
+      `Payme fiskal chek qabul qilindi: payment=${payment.id}, type=${type || 'PERFORM'}, receipt=${entry.receiptId}`,
+    );
+    return { success: true };
   }
 
   // ---------- Yordamchilar ----------
