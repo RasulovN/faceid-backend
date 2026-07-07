@@ -1,0 +1,186 @@
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { ILike, IsNull, Not, Repository } from 'typeorm';
+import { AttendanceEvent } from '../../entities/attendance-event.entity';
+import { Branch } from '../../entities/branch.entity';
+import { Company } from '../../entities/company.entity';
+import { Device } from '../../entities/device.entity';
+import { Employee } from '../../entities/employee.entity';
+import { Payment } from '../../entities/payment.entity';
+import { Subscription } from '../../entities/subscription.entity';
+import { User } from '../../entities/user.entity';
+import { AppException } from '../../common/exceptions/app.exception';
+import { EmployeeStatus, PaymeState } from '../../common/enums';
+import { Paginated } from '../../common/dto/pagination.dto';
+import {
+  AdminUpdateCompanyDto,
+  CompanyListQueryDto,
+  UpdateCompanyProfileDto,
+  UpdateCompanyStatusDto,
+} from './dto/company.dtos';
+
+@Injectable()
+export class CompaniesService {
+  constructor(
+    @InjectRepository(Company) private readonly companyRepository: Repository<Company>,
+    @InjectRepository(Branch) private readonly branchRepository: Repository<Branch>,
+    @InjectRepository(Employee) private readonly employeeRepository: Repository<Employee>,
+    @InjectRepository(Device) private readonly deviceRepository: Repository<Device>,
+    @InjectRepository(Subscription) private readonly subscriptionRepository: Repository<Subscription>,
+    @InjectRepository(Payment) private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(User) private readonly userRepository: Repository<User>,
+    @InjectRepository(AttendanceEvent)
+    private readonly attendanceEventRepository: Repository<AttendanceEvent>,
+  ) {}
+
+  // ---------- Superadmin ----------
+
+  async findAll(query: CompanyListQueryDto) {
+    const where: Record<string, unknown> = {};
+    if (query.status) where.status = query.status;
+    if (query.search) where.name = ILike(`%${query.search}%`);
+    const [items, total] = await this.companyRepository.findAndCount({
+      where,
+      relations: { tariff: true },
+      order: { [query.sortBy ?? 'createdAt']: query.sortOrder },
+      skip: query.skip,
+      take: query.limit,
+    });
+    const enriched = await Promise.all(
+      items.map(async (company) => ({
+        ...company,
+        owner: company.ownerId ? await this.publicOwner(company.ownerId) : null,
+        employeeCount: await this.employeeRepository.count({
+          where: {
+            companyId: company.id,
+            status: Not(EmployeeStatus.FIRED),
+            deletedAt: IsNull(),
+          },
+        }),
+      })),
+    );
+    return Paginated.of(enriched, total, query);
+  }
+
+  async findOneFull(id: string) {
+    const company = await this.companyRepository.findOne({
+      where: { id },
+      relations: { tariff: true },
+    });
+    if (!company) throw AppException.notFound('Kompaniya topilmadi');
+    const [subscriptions, payments, stats, owner] = await Promise.all([
+      this.subscriptionRepository.find({
+        where: { companyId: id },
+        relations: { tariff: true },
+        order: { endsAt: 'DESC' },
+      }),
+      this.paymentRepository.find({ where: { companyId: id }, order: { createdAt: 'DESC' } }),
+      this.stats(id),
+      company.ownerId ? this.publicOwner(company.ownerId) : Promise.resolve(null),
+    ]);
+    return {
+      ...company,
+      owner,
+      subscription: subscriptions[0] ?? null,
+      subscriptions,
+      payments,
+      stats,
+    };
+  }
+
+  private async publicOwner(ownerId: string) {
+    const owner = await this.userRepository.findOne({ where: { id: ownerId } });
+    if (!owner) return null;
+    return {
+      id: owner.id,
+      username: owner.username,
+      email: owner.email,
+      phone: owner.phone,
+      role: owner.role,
+      isActive: owner.isActive,
+      lastLoginAt: owner.lastLoginAt,
+      createdAt: owner.createdAt,
+    };
+  }
+
+  async adminUpdate(id: string, dto: AdminUpdateCompanyDto): Promise<Company> {
+    const company = await this.getById(id);
+    Object.assign(company, dto);
+    return this.companyRepository.save(company);
+  }
+
+  async updateStatus(id: string, dto: UpdateCompanyStatusDto): Promise<Company> {
+    const company = await this.getById(id);
+    company.status = dto.status;
+    return this.companyRepository.save(company);
+  }
+
+  async stats(id: string) {
+    await this.getById(id);
+
+    // Attendance grafigi uchun oxirgi 14 kun (bugungi kun ham kiradi).
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    since.setDate(since.getDate() - 13);
+
+    const [branchesCount, employeesCount, devicesCount, attendanceRows, paymentRows] =
+      await Promise.all([
+        this.branchRepository.count({ where: { companyId: id } }),
+        this.employeeRepository.count({
+          where: { companyId: id, status: Not(EmployeeStatus.FIRED), deletedAt: IsNull() },
+        }),
+        this.deviceRepository.count({ where: { companyId: id } }),
+        // Kunlik davomat hodisalari soni (filial orqali kompaniyaga bog'lanadi).
+        this.attendanceEventRepository
+          .createQueryBuilder('ae')
+          .innerJoin('ae.branch', 'b')
+          .select("to_char(ae.\"timestamp\", 'YYYY-MM-DD')", 'date')
+          .addSelect('COUNT(*)', 'count')
+          .where('b.companyId = :id', { id })
+          .andWhere('ae.timestamp >= :since', { since })
+          .groupBy('date')
+          .orderBy('date', 'ASC')
+          .getRawMany<{ date: string; count: string }>(),
+        // Oylik muvaffaqiyatli to'lovlar summasi (tiyin).
+        this.paymentRepository
+          .createQueryBuilder('p')
+          .select("to_char(p.\"createdAt\", 'YYYY-MM')", 'month')
+          .addSelect('COALESCE(SUM(p.amount), 0)', 'amount')
+          .where('p."companyId" = :id AND p.state = :state', { id, state: PaymeState.PERFORMED })
+          .groupBy('month')
+          .orderBy('month', 'ASC')
+          .getRawMany<{ month: string; amount: string }>(),
+      ]);
+
+    return {
+      branchesCount,
+      employeesCount,
+      devicesCount,
+      attendanceChart: attendanceRows.map((r) => ({ date: r.date, count: Number(r.count) })),
+      paymentsChart: paymentRows.map((r) => ({ month: r.month, amount: Number(r.amount) })),
+    };
+  }
+
+  // ---------- Kompaniya profili ----------
+
+  async getProfile(companyId: string) {
+    const company = await this.companyRepository.findOne({
+      where: { id: companyId },
+      relations: { tariff: true },
+    });
+    if (!company) throw AppException.notFound('Kompaniya topilmadi');
+    return company;
+  }
+
+  async updateProfile(companyId: string, dto: UpdateCompanyProfileDto): Promise<Company> {
+    const company = await this.getById(companyId);
+    Object.assign(company, dto);
+    return this.companyRepository.save(company);
+  }
+
+  async getById(id: string): Promise<Company> {
+    const company = await this.companyRepository.findOne({ where: { id } });
+    if (!company) throw AppException.notFound('Kompaniya topilmadi');
+    return company;
+  }
+}

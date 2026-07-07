@@ -1,0 +1,121 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FastifyRequest } from 'fastify';
+import { EmployeesService } from './employees.service';
+import {
+  CreateEmployeeDto,
+  EmployeeAttendanceQueryDto,
+  EmployeeListQueryDto,
+  UpdateEmployeeDto,
+  UpdateEmployeeStatusDto,
+} from './dto/employee.dtos';
+import { CurrentUser, Permissions, RequestUser } from '../../common/decorators';
+import { PERMISSIONS, roleHasPermission } from '../../common/constants/permissions';
+import { UserRole } from '../../common/enums';
+import { AppException } from '../../common/exceptions/app.exception';
+import { parseMultipart } from '../../common/utils/multipart.util';
+
+@ApiTags('employees')
+@ApiBearerAuth()
+@Controller('employees')
+export class EmployeesController {
+  constructor(private readonly employeesService: EmployeesService) {}
+
+  @Get()
+  @Permissions(PERMISSIONS.EMPLOYEES_READ)
+  async findAll(@CurrentUser() user: RequestUser, @Query() query: EmployeeListQueryDto) {
+    return this.employeesService.findAll(user.companyId!, query);
+  }
+
+  @Post()
+  @Permissions(PERMISSIONS.EMPLOYEES_CREATE)
+  @ApiOperation({ summary: 'Xodim yaratish (User + Employee bitta tranzaksiyada)' })
+  async create(@CurrentUser() user: RequestUser, @Body() dto: CreateEmployeeDto) {
+    return this.employeesService.create(user.companyId!, dto);
+  }
+
+  @Get(':id')
+  @Permissions(PERMISSIONS.EMPLOYEES_READ)
+  async findOne(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.employeesService.findOne(user.companyId!, id);
+  }
+
+  @Patch(':id')
+  @Permissions(PERMISSIONS.EMPLOYEES_UPDATE)
+  async update(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateEmployeeDto,
+  ) {
+    return this.employeesService.update(user.companyId!, id, dto);
+  }
+
+  @Delete(':id')
+  @Permissions(PERMISSIONS.EMPLOYEES_DELETE)
+  @ApiOperation({ summary: 'Soft delete — bog‘liq User ham deaktiv bo‘ladi' })
+  async remove(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.employeesService.remove(user.companyId!, id);
+  }
+
+  @Post(':id/photos')
+  @Permissions(PERMISSIONS.EMPLOYEES_UPDATE)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: '1–5 rasm → MinIO → face-service /extract → FaceEmbedding' })
+  async addPhotos(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: FastifyRequest,
+  ) {
+    const { files } = await parseMultipart(req, { maxFiles: 5, imagesOnly: true });
+    return this.employeesService.addPhotos(user.companyId!, id, files);
+  }
+
+  @Delete(':id/photos/:embeddingId')
+  @Permissions(PERMISSIONS.EMPLOYEES_UPDATE)
+  async removePhoto(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('embeddingId', ParseUUIDPipe) embeddingId: string,
+  ) {
+    return this.employeesService.removePhoto(user.companyId!, id, embeddingId);
+  }
+
+  @Patch(':id/status')
+  @Permissions(PERMISSIONS.EMPLOYEES_UPDATE)
+  async updateStatus(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateEmployeeStatusDto,
+  ) {
+    return this.employeesService.updateStatus(user.companyId!, id, dto);
+  }
+
+  @Get(':id/attendance')
+  @ApiOperation({
+    summary:
+      'Xodimning kunlik davomati: har kun uchun { date, workDay|null, events[] }. EMPLOYEE faqat o‘zinikini ko‘radi',
+  })
+  async attendance(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: EmployeeAttendanceQueryDto,
+  ) {
+    if (user.role === UserRole.EMPLOYEE) {
+      await this.employeesService.assertOwnEmployee(user.companyId!, id, user.id);
+    } else if (!roleHasPermission(user.role, PERMISSIONS.EMPLOYEES_READ)) {
+      throw AppException.forbidden('Sizda employees.read ruxsati yo‘q');
+    }
+    return this.employeesService.attendance(user.companyId!, id, query);
+  }
+}

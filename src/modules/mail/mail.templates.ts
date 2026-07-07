@@ -1,0 +1,94 @@
+/** O'zbek tilidagi HTML email shablonlari */
+
+function layout(title: string, content: string): string {
+  return `<!DOCTYPE html>
+<html lang="uz">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f6fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(30,50,120,.08);">
+        <tr>
+          <td style="background:linear-gradient(135deg,#2563eb,#4f46e5);padding:28px 32px;">
+            <div style="font-size:22px;font-weight:700;color:#ffffff;letter-spacing:.5px;">FaceID Platform</div>
+            <div style="font-size:13px;color:#dbeafe;margin-top:4px;">Yuzni tanish orqali davomat tizimi</div>
+          </td>
+        </tr>
+        <tr><td style="padding:32px;">
+          <h2 style="margin:0 0 16px;font-size:19px;color:#111827;">${title}</h2>
+          ${content}
+        </td></tr>
+        <tr><td style="padding:20px 32px;background:#f9fafb;border-top:1px solid #eef1f6;">
+          <div style="font-size:12px;color:#9ca3af;line-height:1.6;">
+            Bu xat FaceID Platform tomonidan avtomatik yuborildi. Agar bu amalni siz bajarmagan bo‘lsangiz, xatni e’tiborsiz qoldiring.
+          </div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+function button(url: string, label: string): string {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;"><tr><td style="border-radius:10px;background:#2563eb;">
+    <a href="${url}" style="display:inline-block;padding:13px 28px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">${label}</a>
+  </td></tr></table>
+  <div style="font-size:12px;color:#6b7280;">Tugma ishlamasa, quyidagi havolani brauzerga nusxalang:<br><a href="${url}" style="color:#2563eb;word-break:break-all;">${url}</a></div>`;
+}
+
+export function verificationEmailTemplate(name: string, url: string): string {
+  return layout(
+    'Email manzilingizni tasdiqlang',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Assalomu alaykum, <b>${name}</b>!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">FaceID Platformada ro‘yxatdan o‘tganingiz uchun rahmat. Hisobingizni faollashtirish uchun email manzilingizni tasdiqlang:</p>
+     ${button(url, 'Emailni tasdiqlash')}`,
+  );
+}
+
+export function passwordResetTemplate(name: string, url: string): string {
+  return layout(
+    'Parolni tiklash',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Assalomu alaykum, <b>${name}</b>!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Hisobingiz uchun parolni tiklash so‘rovi qabul qilindi. Yangi parol o‘rnatish uchun tugmani bosing. Havola <b>1 soat</b> davomida amal qiladi:</p>
+     ${button(url, 'Yangi parol o‘rnatish')}`,
+  );
+}
+
+export function employeeCredentialsTemplate(
+  name: string,
+  companyName: string,
+  username: string,
+  password: string,
+  loginUrl: string,
+): string {
+  return layout(
+    'FaceID tizimiga xush kelibsiz',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Assalomu alaykum, <b>${name}</b>!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;"><b>${companyName}</b> kompaniyasi sizni FaceID davomat tizimiga qo‘shdi. Kirish ma’lumotlaringiz:</p>
+     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;background:#f3f4f6;border-radius:10px;width:100%;">
+       <tr><td style="padding:16px 20px;">
+         <div style="font-size:13px;color:#6b7280;">Login</div>
+         <div style="font-size:16px;color:#111827;font-weight:600;margin-bottom:12px;">${username}</div>
+         <div style="font-size:13px;color:#6b7280;">Parol</div>
+         <div style="font-size:16px;color:#111827;font-weight:600;font-family:Consolas,monospace;">${password}</div>
+       </td></tr>
+     </table>
+     <p style="font-size:13px;color:#b45309;background:#fef3c7;padding:10px 14px;border-radius:8px;">Xavfsizlik uchun birinchi kirishdan so‘ng parolni o‘zgartirishni tavsiya qilamiz.</p>
+     ${button(loginUrl, 'Tizimga kirish')}`,
+  );
+}
+
+export function subscriptionExpiringTemplate(
+  companyName: string,
+  daysLeft: number,
+  endsAt: string,
+  payUrl: string,
+): string {
+  return layout(
+    'Obuna muddati tugayapti',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Obunangiz muddati tugashiga <b style="color:#dc2626;">${daysLeft} kun</b> qoldi (${endsAt}). Xizmat uzluksiz davom etishi uchun to‘lovni oldindan amalga oshiring.</p>
+     ${button(payUrl, 'To‘lovni amalga oshirish')}`,
+  );
+}
