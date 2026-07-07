@@ -10,6 +10,8 @@ export { AttendanceEvent } from './attendance-event.entity';
 export { WorkDay } from './work-day.entity';
 export { PenaltyRule, BonusRule, OvertimeRule } from './rules.entities';
 export { PayrollRecord } from './payroll-record.entity';
+export { PayrollAdjustment } from './payroll-adjustment.entity';
+export { Holiday } from './holiday.entity';
 export { Device } from './device.entity';
 export { Subscription } from './subscription.entity';
 export { Payment } from './payment.entity';
@@ -21,6 +23,8 @@ export { StorageSnapshot } from './storage-snapshot.entity';
 import { AttendanceEvent } from './attendance-event.entity';
 import { AuditLog } from './audit-log.entity';
 import { Branch } from './branch.entity';
+import { Holiday } from './holiday.entity';
+import { PayrollAdjustment } from './payroll-adjustment.entity';
 import { Company } from './company.entity';
 import { Device } from './device.entity';
 import { Employee } from './employee.entity';
@@ -53,6 +57,8 @@ export const ALL_ENTITIES = [
   BonusRule,
   OvertimeRule,
   PayrollRecord,
+  PayrollAdjustment,
+  Holiday,
   Device,
   Subscription,
   Payment,

@@ -11,8 +11,12 @@ import { ScheduleType } from '../common/enums';
 export interface ScheduleDay {
   dayOfWeek: number; // 1..7 (Dushanba=1)
   startTime: string; // 'HH:mm'
-  endTime: string; // 'HH:mm'
+  endTime: string; // 'HH:mm' (endTime <= startTime bo'lsa — tungi smena, keyingi kunga o'tadi)
+  /** Legacy: tushlik oynasi ko'rsatilmagan grafiklar uchun tanaffus (daqiqa) */
   breakMinutes: number;
+  /** Tushlik oynasi — bu oraliqdagi ish vaqti hisobga olinmaydi (masalan 13:00–14:00) */
+  lunchStart?: string | null; // 'HH:mm'
+  lunchEnd?: string | null; // 'HH:mm'
 }
 
 @Entity('work_schedules')
@@ -45,6 +49,13 @@ export class WorkSchedule {
 
   @Column({ type: 'int', default: 10 })
   gracePeriodMinutes: number;
+
+  /**
+   * Moslashuvchan kelish oynasi (daqiqa): start..start+flexible oralig'ida kelish
+   * kechikish hisoblanmaydi; kutilgan ketish vaqti kelishga mos ravishda suriladi.
+   */
+  @Column({ type: 'int', default: 0 })
+  flexibleMinutes: number;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

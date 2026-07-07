@@ -77,6 +77,18 @@ export enum PayrollStatus {
   PAID = 'PAID',
 }
 
+/** Oylikka qo'lda kiritiladigan tuzatish turlari */
+export enum PayrollAdjustmentType {
+  /** Avans — oldindan berilgan pul, oylikdan ushlanadi */
+  ADVANCE = 'ADVANCE',
+  /** Qarz ushlanmasi */
+  LOAN = 'LOAN',
+  /** Boshqa ushlanma */
+  DEDUCTION = 'DEDUCTION',
+  /** Qo'shimcha mukofot (performance bonus va h.k.) */
+  BONUS = 'BONUS',
+}
+
 export enum DeviceType {
   KIOSK = 'KIOSK',
 }

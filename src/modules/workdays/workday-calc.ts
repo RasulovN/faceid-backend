@@ -4,13 +4,18 @@ import { timeStrToMinutes } from '../../common/utils/tz.util';
 
 export interface CalcEvent {
   type: AttendanceEventType;
-  /** Kompaniya timezone'ida yarim tundan o'tgan daqiqalar */
+  /**
+   * Kompaniya timezone'ida yarim tundan o'tgan daqiqalar.
+   * Tungi (yarim tundan o'tuvchi) smenada keyingi kun eventlari +1440 bilan beriladi.
+   */
   minutes: number;
 }
 
 export interface WorkDayCalcInput {
   scheduleDay: ScheduleDay | null;
   gracePeriodMinutes: number;
+  /** Moslashuvchan kelish oynasi (daqiqa): start..start+flexible — kechikish emas */
+  flexibleMinutes?: number;
   events: CalcEvent[];
   employeeStatus: EmployeeStatus;
   /** Hisob paytidagi joriy daqiqa (agar kun hali tugamagan bo'lsa ochiq intervalni cheklash uchun) */
@@ -26,15 +31,61 @@ export interface WorkDayCalcResult {
   status: WorkDayStatus;
 }
 
+/** Smena chegaralari: endTime <= startTime bo'lsa tungi smena — end +24h */
+export function shiftBounds(day: ScheduleDay): { start: number; end: number } {
+  const start = timeStrToMinutes(day.startTime);
+  let end = timeStrToMinutes(day.endTime);
+  if (end <= start) end += 1440; // yarim tundan o'tuvchi smena
+  return { start, end };
+}
+
+export function crossesMidnight(day: ScheduleDay): boolean {
+  return timeStrToMinutes(day.endTime) <= timeStrToMinutes(day.startTime);
+}
+
+/** Tushlik oynasi (mutlaq daqiqalarda, smena ichiga qirqilgan); yo'q bo'lsa null */
+function lunchWindow(day: ScheduleDay): { from: number; to: number } | null {
+  if (!day.lunchStart || !day.lunchEnd) return null;
+  const { start, end } = shiftBounds(day);
+  let from = timeStrToMinutes(day.lunchStart);
+  let to = timeStrToMinutes(day.lunchEnd);
+  // Tungi smenada tushlik yarim tundan keyin bo'lishi mumkin (masalan 02:00-02:30)
+  if (from < start) {
+    from += 1440;
+    to += 1440;
+  } else if (to <= from) {
+    to += 1440; // tushlikning o'zi yarim tundan o'tadi
+  }
+  const clampedFrom = Math.max(start, Math.min(from, end));
+  const clampedTo = Math.max(start, Math.min(to, end));
+  if (clampedTo <= clampedFrom) return null;
+  return { from: clampedFrom, to: clampedTo };
+}
+
+/** Kunlik rejalashtirilgan SOF ish daqiqalari (tushlik chiqarilgan) */
+export function scheduledMinutesOf(day: ScheduleDay): number {
+  const { start, end } = shiftBounds(day);
+  const lunch = lunchWindow(day);
+  const lunchMinutes = lunch ? lunch.to - lunch.from : (day.breakMinutes ?? 0);
+  return Math.max(0, end - start - lunchMinutes);
+}
+
+/** [a1,a2] va [b1,b2] intervallar kesishmasi (daqiqa) */
+function overlap(a1: number, a2: number, b1: number, b2: number): number {
+  return Math.max(0, Math.min(a2, b2) - Math.max(a1, b1));
+}
+
 /**
  * Bir kunlik davomat hisobi (sof funksiya, testlanadigan):
- * - lateMinutes: birinchi CHECK_IN grafik boshlanishidan (grace'dan keyin) qancha kech
- * - earlyLeaveMinutes: oxirgi CHECK_OUT grafik tugashidan qancha erta
- * - overtimeMinutes: oxirgi CHECK_OUT grafik tugashidan qancha kech
- * - workedMinutes: IN→OUT juftliklar yig'indisi minus tanaffus
+ * - lateMinutes: birinchi CHECK_IN (start + flexible) dan qancha kech; grace ichida bo'lsa 0
+ * - flexible oynada kelinsa kutilgan ketish vaqti mos ravishda suriladi (haqiqiy flextime)
+ * - earlyLeaveMinutes / overtimeMinutes: kutilgan ketish vaqtiga nisbatan
+ * - workedMinutes: IN→OUT juftliklar yig'indisi minus tushlik oynasi bilan kesishma
+ * - tungi smena (end <= start) qo'llab-quvvatlanadi — keyingi kun eventlari +1440
  */
 export function calcWorkDay(input: WorkDayCalcInput): WorkDayCalcResult {
   const { scheduleDay, gracePeriodMinutes, events, employeeStatus } = input;
+  const flexible = Math.max(0, input.flexibleMinutes ?? 0);
 
   if (employeeStatus === EmployeeStatus.VACATION) {
     return {
@@ -61,32 +112,39 @@ export function calcWorkDay(input: WorkDayCalcInput): WorkDayCalcResult {
     };
   }
 
-  const worked = pairWorkedMinutes(sorted, input.nowMinutes, scheduleDay);
   const firstIn = sorted.find((e) => e.type === AttendanceEventType.CHECK_IN);
   const lastOut = [...sorted].reverse().find((e) => e.type === AttendanceEventType.CHECK_OUT);
 
   let lateMinutes = 0;
   let earlyLeaveMinutes = 0;
   let overtimeMinutes = 0;
+  let requiredEnd: number | null = null;
 
   if (scheduleDay) {
-    const start = timeStrToMinutes(scheduleDay.startTime);
-    const end = timeStrToMinutes(scheduleDay.endTime);
-    if (firstIn && firstIn.minutes > start + gracePeriodMinutes) {
-      lateMinutes = firstIn.minutes - start;
+    const { start, end } = shiftBounds(scheduleDay);
+    // Flexible: start..start+flexible oynada kelish kechikish emas,
+    // lekin kutilgan ketish vaqti kelish siljishiga mos suriladi.
+    const arrivalOffset = firstIn
+      ? Math.max(0, Math.min(firstIn.minutes - start, flexible))
+      : 0;
+    requiredEnd = end + arrivalOffset;
+
+    if (firstIn) {
+      const rawLate = Math.max(0, firstIn.minutes - (start + flexible));
+      // Grace — kichik kechikish e'tiborga olinmaydi (masalan <= 5 daqiqa)
+      lateMinutes = rawLate > gracePeriodMinutes ? rawLate : 0;
     }
     if (lastOut) {
-      if (lastOut.minutes < end) earlyLeaveMinutes = end - lastOut.minutes;
-      if (lastOut.minutes > end) overtimeMinutes = lastOut.minutes - end;
+      if (lastOut.minutes < requiredEnd) earlyLeaveMinutes = requiredEnd - lastOut.minutes;
+      if (lastOut.minutes > requiredEnd) overtimeMinutes = lastOut.minutes - requiredEnd;
     }
   }
 
-  const breakMinutes = scheduleDay?.breakMinutes ?? 0;
-  const workedNet = Math.max(0, worked - (worked > breakMinutes ? breakMinutes : 0));
+  const worked = pairWorkedMinutes(sorted, input.nowMinutes, scheduleDay, requiredEnd);
 
   return {
     scheduledMinutes: scheduled,
-    workedMinutes: workedNet,
+    workedMinutes: worked,
     lateMinutes,
     earlyLeaveMinutes,
     overtimeMinutes,
@@ -94,38 +152,49 @@ export function calcWorkDay(input: WorkDayCalcInput): WorkDayCalcResult {
   };
 }
 
-export function scheduledMinutesOf(day: ScheduleDay): number {
-  return Math.max(
-    0,
-    timeStrToMinutes(day.endTime) - timeStrToMinutes(day.startTime) - (day.breakMinutes ?? 0),
-  );
-}
-
-/** IN→OUT juftliklarni yig'adi; yopilmagan IN oxirida grafik tugashi/hozirgi vaqt bilan cheklanadi */
+/**
+ * IN→OUT juftliklarni yig'adi; yopilmagan IN oxirida kutilgan tugash/hozirgi vaqt bilan cheklanadi.
+ * Tushlik oynasi bilan kesishgan vaqt chiqariladi (oyna yo'q bo'lsa legacy breakMinutes).
+ */
 function pairWorkedMinutes(
   sorted: CalcEvent[],
   nowMinutes: number | undefined,
   scheduleDay: ScheduleDay | null,
+  requiredEnd: number | null,
 ): number {
-  let total = 0;
+  const lunch = scheduleDay ? lunchWindow(scheduleDay) : null;
+  const intervals: Array<[number, number]> = [];
   let openIn: number | null = null;
   for (const event of sorted) {
     if (event.type === AttendanceEventType.CHECK_IN) {
       if (openIn === null) openIn = event.minutes;
     } else if (openIn !== null) {
-      total += Math.max(0, event.minutes - openIn);
+      if (event.minutes > openIn) intervals.push([openIn, event.minutes]);
       openIn = null;
     }
   }
   if (openIn !== null) {
-    const scheduleEnd = scheduleDay ? timeStrToMinutes(scheduleDay.endTime) : null;
+    const scheduleEnd = requiredEnd;
     const cap =
       nowMinutes !== undefined
         ? scheduleEnd !== null
           ? Math.min(Math.max(nowMinutes, openIn), scheduleEnd)
           : Math.max(nowMinutes, openIn)
         : (scheduleEnd ?? openIn);
-    total += Math.max(0, cap - openIn);
+    if (cap > openIn) intervals.push([openIn, cap]);
   }
-  return total;
+
+  let total = intervals.reduce((s, [a, b]) => s + (b - a), 0);
+  if (lunch) {
+    // Tushlik oynasiga to'g'ri kelgan ish vaqti hisobga olinmaydi
+    const lunchOverlap = intervals.reduce(
+      (s, [a, b]) => s + overlap(a, b, lunch.from, lunch.to),
+      0,
+    );
+    total -= lunchOverlap;
+  } else if (scheduleDay?.breakMinutes) {
+    // Legacy: oyna ko'rsatilmagan grafikda flat tanaffus chiqariladi
+    total = total > scheduleDay.breakMinutes ? total - scheduleDay.breakMinutes : total;
+  }
+  return Math.max(0, total);
 }

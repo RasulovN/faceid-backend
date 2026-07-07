@@ -1,342 +1,374 @@
-import { calcPayroll, CalcWorkDayRow } from './payroll-calc';
-import { BonusType, PenaltyType, SalaryType, WorkDayStatus } from '../../common/enums';
+import {
+  calcPayroll,
+  CalcWorkDayRow,
+  defaultPolicy,
+  PayrollCalcInput,
+  PayrollPolicy,
+} from './payroll-calc';
+import { monthScheduleStats } from './month-schedule';
+import {
+  BonusType,
+  PayrollAdjustmentType,
+  SalaryType,
+  WorkDayStatus,
+} from '../../common/enums';
 
-const SCHEDULED = 480; // 8 soat
+/**
+ * Foydalanuvchi misoli asosida:
+ *   Oylik: 6 000 000 so'm (600 000 000 tiyin)
+ *   Oy: 22 ish kuni × 8 soat = 176 soat = 10 560 daqiqa
+ *   Soatlik: 34 090.90 so'm; daqiqalik: 568.18 so'm; kunlik: 272 727 so'm
+ */
+const SALARY = 600_000_000; // tiyin
+const E = 22 * 8 * 60; // 10 560 daqiqa
+const D = 22;
+const MR = SALARY / E; // 56 818.18 tiyin/daqiqa
+const DAILY = SALARY / D; // 27 272 727.27 tiyin
 
-function day(
-  date: string,
-  status: WorkDayStatus,
-  overrides: Partial<CalcWorkDayRow> = {},
-): CalcWorkDayRow {
+function day(date: string, over: Partial<CalcWorkDayRow> = {}): CalcWorkDayRow {
   return {
     date,
-    status,
-    scheduledMinutes: SCHEDULED,
-    workedMinutes: status === WorkDayStatus.ABSENT ? 0 : SCHEDULED,
+    status: WorkDayStatus.PRESENT,
+    scheduledMinutes: 480,
+    workedMinutes: 480,
     lateMinutes: 0,
     earlyLeaveMinutes: 0,
     overtimeMinutes: 0,
-    ...overrides,
+    ...over,
   };
 }
 
-describe('calcPayroll', () => {
-  describe('FIXED', () => {
-    const MONTHLY = 460_000_000; // 4 600 000 so'm (tiyin)
+function calc(
+  workDays: CalcWorkDayRow[],
+  over: Partial<PayrollCalcInput> = {},
+  policy: Partial<PayrollPolicy> = {},
+) {
+  return calcPayroll({
+    salaryType: SalaryType.FIXED,
+    salaryAmount: SALARY,
+    monthExpectedMinutes: E,
+    monthWorkingDays: D,
+    holidayDates: [],
+    workDays,
+    policy: defaultPolicy(policy),
+    bonusRules: [],
+    adjustments: [],
+    ...over,
+  });
+}
 
-    it('to‘liq davomat — to‘liq oylik', () => {
-      const workDays = Array.from({ length: 20 }, (_, i) =>
-        day(`2026-06-${String(i + 1).padStart(2, '0')}`, WorkDayStatus.PRESENT),
-      );
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.baseSalary).toBe(MONTHLY);
-      expect(result.totalAmount).toBe(MONTHLY);
-      expect(result.penaltyAmount).toBe(0);
-    });
+describe('calcPayroll — VAQT = PUL engine', () => {
+  // ---------- Stavkalar ----------
 
-    it('kelmagan kunlar proporsional ushlab qolinadi', () => {
-      const workDays = [
-        ...Array.from({ length: 18 }, (_, i) =>
-          day(`2026-06-${String(i + 1).padStart(2, '0')}`, WorkDayStatus.PRESENT),
-        ),
-        day('2026-06-19', WorkDayStatus.ABSENT),
-        day('2026-06-20', WorkDayStatus.ABSENT),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      // 20 ish kunidan 18 tasi: oylik/20*18
-      expect(result.baseSalary).toBe(Math.round((MONTHLY / 20) * 18));
-    });
-
-    it('LATE_FIXED jarima — threshold oshgan har kechikish uchun', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 20 }),
-        day('2026-06-02', WorkDayStatus.LATE, { lateMinutes: 10 }), // threshold'dan past
-        day('2026-06-03', WorkDayStatus.PRESENT),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_FIXED, amount: 5_000_000, thresholdMinutes: 15, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(5_000_000); // faqat 20 daqiqalik kechikish
-    });
-
-    it('LATE_PER_MINUTE jarima — daqiqasiga', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 30 })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_PER_MINUTE, amount: 100_000, thresholdMinutes: 0, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(30 * 100_000);
-    });
-
-    it('ABSENT jarima har sababsiz kun uchun', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.ABSENT),
-        day('2026-06-02', WorkDayStatus.ABSENT),
-        day('2026-06-03', WorkDayStatus.PRESENT),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.ABSENT, amount: 20_000_000, thresholdMinutes: 0, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(40_000_000);
-    });
-
-    it('overtime soatlik stavka * multiplier bilan qo‘shiladi', () => {
-      // 1 kun, 480 daqiqa scheduled, 120 daqiqa overtime
-      const workDays = [day('2026-06-01', WorkDayStatus.PRESENT, { overtimeMinutes: 120 })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: 480_000, // 1 kunlik oy: soatlik = 480000/8 = 60000
-        workDays,
-        penaltyRules: [],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      // 2 soat * 60000 * 1.5 = 180000
-      expect(result.overtimeAmount).toBe(180_000);
-      expect(result.totalAmount).toBe(480_000 + 180_000);
-    });
-
-    it('o‘chirilgan (isActive=false) qoidalar qo‘llanmaydi', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 30 })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_FIXED, amount: 5_000_000, thresholdMinutes: 0, isActive: false },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(0);
-    });
+  it('stavkalar to‘g‘ri: soatlik = oylik/176s, daqiqalik = soatlik/60, kunlik = oylik/22', () => {
+    const r = calc([day('2026-07-01')]);
+    const rates = (r.breakdown as any).rates;
+    expect(rates.hourlyRate).toBeCloseTo(3_409_090.91, 1); // 34 090.91 so'm
+    expect(rates.minuteRate).toBeCloseTo(56_818.18, 1); // 568.18 so'm
+    expect(rates.dailyRate).toBe(27_272_727); // 272 727 so'm
+    expect(rates.monthExpectedMinutes).toBe(10_560);
+    expect(rates.monthWorkingDays).toBe(22);
   });
 
-  describe('HOURLY', () => {
-    const HOURLY_RATE = 2_500_000; // 25 000 so'm/soat (tiyin)
+  // ---------- Kechikish ----------
 
-    it('ishlagan daqiqalar bo‘yicha hisoblaydi', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.PRESENT, { workedMinutes: 480 }),
-        day('2026-06-02', WorkDayStatus.PRESENT, { workedMinutes: 360 }),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.HOURLY,
-        salaryAmount: HOURLY_RATE,
-        workDays,
-        penaltyRules: [],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.workedMinutes).toBe(840);
-      expect(result.baseSalary).toBe(Math.round((840 / 60) * HOURLY_RATE));
-    });
-
-    it('overtime ustamasi (multiplier − 1) bilan qo‘shiladi', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.PRESENT, { workedMinutes: 600, overtimeMinutes: 120 }),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.HOURLY,
-        salaryAmount: HOURLY_RATE,
-        workDays,
-        penaltyRules: [],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      const base = Math.round((600 / 60) * HOURLY_RATE);
-      const extra = Math.round((120 / 60) * HOURLY_RATE * 0.5);
-      expect(result.baseSalary).toBe(base);
-      expect(result.overtimeAmount).toBe(extra);
-      expect(result.totalAmount).toBe(base + extra);
-    });
+  it('18 daqiqa kechikish → 18 × daqiqalik stavka (10 227 so‘m), foiz YO‘Q', () => {
+    const r = calc([day('2026-07-03', { status: WorkDayStatus.LATE, lateMinutes: 18 })]);
+    expect(r.penaltyAmount).toBe(Math.round(18 * MR)); // 1 022 727 tiyin = 10 227.27 so'm
+    expect(r.penaltyAmount).toBe(1_022_727);
+    const p = (r.breakdown as any).penalties[0];
+    expect(p.kind).toBe('LATE');
+    expect(p.minutes).toBe(18);
+    expect(p.formula).toContain('18 daqiqa');
+    expect(p.formula).toContain('568.18');
   });
 
-  describe('bonuslar va chegaralar', () => {
-    it('FULL_ATTENDANCE bonusi faqat mukammal davomatda beriladi', () => {
-      const perfect = [day('2026-06-01', WorkDayStatus.PRESENT)];
-      const withLate = [day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 5 })];
-      const bonusRules = [
-        { type: BonusType.FULL_ATTENDANCE, amount: 30_000_000, isActive: true },
-      ];
-      const base = {
-        salaryType: SalaryType.FIXED,
-        salaryAmount: 100_000_000,
-        penaltyRules: [],
-        overtimeMultiplier: 1.5,
-      };
-      expect(calcPayroll({ ...base, workDays: perfect, bonusRules }).bonusAmount).toBe(30_000_000);
-      expect(calcPayroll({ ...base, workDays: withLate, bonusRules }).bonusAmount).toBe(0);
-    });
-
-    it('jami summa manfiy bo‘lmaydi', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.ABSENT)];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: 1_000_000,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.ABSENT, amount: 99_000_000, thresholdMinutes: 0, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.totalAmount).toBe(0);
-    });
+  it('grace ichidagi kechikish (workday-calc late=0 beradi) jarima olmaydi', () => {
+    // 5 daqiqa kechikib kelgan, grace 5 → workday-calc lateMinutes=0 yozadi
+    const r = calc([day('2026-07-03', { lateMinutes: 0, workedMinutes: 475 })]);
+    expect(r.penaltyAmount).toBe(0);
   });
 
-  describe('LATE_SALARY — maoshga proporsional kechikish jarimasi', () => {
-    // Oylik 4 600 000 so'm, smena 8 soat (480 daq).
-    // 1 daqiqalik ish haqi = 460 000 000 / 30 / 480 = 31 944.44 tiyin.
-    const MONTHLY = 460_000_000;
+  it('threshold: kechikish chegaradan kichik bo‘lsa jarima yo‘q', () => {
+    const r = calc(
+      [day('2026-07-03', { status: WorkDayStatus.LATE, lateMinutes: 18 })],
+      {},
+      { late: { active: true, thresholdMinutes: 20, multiplier: 1 } },
+    );
+    expect(r.penaltyAmount).toBe(0);
+  });
 
-    it('kechikkan daqiqalar × daqiqalik ish haqi ushlab qolinadi', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 30 }),
-        day('2026-06-02', WorkDayStatus.PRESENT),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_SALARY, amount: 0, thresholdMinutes: 0, multiplier: 1, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      // 30 × 31 944.44 = 958 333.33 → 958 333 tiyin
-      expect(result.penaltyAmount).toBe(958_333);
-    });
+  it('late qoidasi o‘chirilgan bo‘lsa kechikish kechiriladi', () => {
+    const r = calc(
+      [day('2026-07-03', { status: WorkDayStatus.LATE, lateMinutes: 45 })],
+      {},
+      { late: { active: false, thresholdMinutes: 0, multiplier: 1 } },
+    );
+    expect(r.penaltyAmount).toBe(0);
+  });
 
-    it('multiplier jarimani ko‘paytiradi', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 10 })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_SALARY, amount: 0, thresholdMinutes: 0, multiplier: 2, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      // 10 × 31 944.44 × 2 = 638 888.9 → 638 889
-      expect(result.penaltyAmount).toBe(638_889);
-    });
+  // ---------- Erta ketish ----------
 
-    it('sababli (excused) kunga jarima YOZILMAYDI', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 30, isExcused: true }),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_SALARY, amount: 0, thresholdMinutes: 0, multiplier: 1, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(0);
-    });
+  it('28 daqiqa erta ketish → 28 × daqiqalik stavka', () => {
+    const r = calc([day('2026-07-04', { earlyLeaveMinutes: 28, workedMinutes: 452 })]);
+    expect(r.penaltyAmount).toBe(Math.round(28 * MR)); // 1 590 909
+    expect((r.breakdown as any).penalties[0].kind).toBe('EARLY_LEAVE');
+  });
 
-    it('ABSENT_SALARY — kelmagan kun uchun 1 kunlik ish haqi ushlanadi', () => {
-      const workDays = [
-        day('2026-06-01', WorkDayStatus.ABSENT),
-        day('2026-06-02', WorkDayStatus.PRESENT),
-      ];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.ABSENT_SALARY, amount: 0, thresholdMinutes: 0, multiplier: 1, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      // 1 kunlik ish haqi = 460 000 000 / 30 = 15 333 333 tiyin
-      expect(result.penaltyAmount).toBe(15_333_333);
-    });
+  // ---------- Kelmagan kun ----------
 
-    it('sababli ABSENT ga ABSENT_SALARY jarima yozilmaydi', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.ABSENT, { isExcused: true })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.ABSENT_SALARY, amount: 0, thresholdMinutes: 0, multiplier: 1, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(0);
-    });
+  it('sababsiz kelmagan kun → aynan 1 kunlik ish haqi (272 727 so‘m), IKKI MARTA ushlanmaydi', () => {
+    const r = calc([
+      day('2026-07-14', { status: WorkDayStatus.ABSENT, workedMinutes: 0 }),
+      day('2026-07-15'),
+    ]);
+    expect(r.penaltyAmount).toBe(Math.round(DAILY)); // 27 272 727 tiyin
+    // Baza to'liq oylik bo'lib qoladi — absent faqat jarima sifatida bir marta ushlanadi
+    expect(r.baseSalary).toBe(SALARY);
+    expect(r.totalAmount).toBe(SALARY - Math.round(DAILY));
+  });
 
-    it('overtimeActive=false — qo‘shimcha ish haqi qo‘shilmaydi', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.PRESENT, { overtimeMinutes: 120 })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-        overtimeActive: false,
-      });
-      expect(result.overtimeAmount).toBe(0);
-    });
+  it('sababli (excused) kelmagan kun — jarima YO‘Q, lekin kun to‘lanmaydi', () => {
+    const r = calc([
+      day('2026-07-14', {
+        status: WorkDayStatus.ABSENT,
+        workedMinutes: 0,
+        isExcused: true,
+        excuseReason: 'Kasal bola',
+      }),
+    ]);
+    expect(r.penaltyAmount).toBe(0);
+    expect(r.baseSalary).toBe(SALARY - Math.round(DAILY));
+    const u = (r.breakdown as any).unpaid[0];
+    expect(u.kind).toBe('EXCUSED');
+  });
 
-    it('threshold ostidagi kechikish jarimasiz', () => {
-      const workDays = [day('2026-06-01', WorkDayStatus.LATE, { lateMinutes: 4 })];
-      const result = calcPayroll({
-        salaryType: SalaryType.FIXED,
-        salaryAmount: MONTHLY,
-        workDays,
-        penaltyRules: [
-          { type: PenaltyType.LATE_SALARY, amount: 0, thresholdMinutes: 5, multiplier: 1, isActive: true },
-        ],
-        bonusRules: [],
-        overtimeMultiplier: 1.5,
-      });
-      expect(result.penaltyAmount).toBe(0);
+  it('absent qoidasi o‘chirilgan bo‘lsa ham ishlanmagan kun to‘lanmaydi (jarimasiz)', () => {
+    const r = calc(
+      [day('2026-07-14', { status: WorkDayStatus.ABSENT, workedMinutes: 0 })],
+      {},
+      { absent: { active: false, thresholdMinutes: 0, multiplier: 1 } },
+    );
+    expect(r.penaltyAmount).toBe(0);
+    expect(r.baseSalary).toBe(SALARY - Math.round(DAILY));
+    expect((r.breakdown as any).unpaid[0].kind).toBe('ABSENT_UNPAID');
+  });
+
+  // ---------- Yarim kun ----------
+
+  it('yarim kundan kam ishlangan kun → ushlanma kamida kunlikning yarmi', () => {
+    // 30 daqiqa kechikkan, lekin bor-yo'g'i 200/480 daqiqa ishlagan
+    const r = calc([
+      day('2026-07-08', {
+        status: WorkDayStatus.LATE,
+        lateMinutes: 30,
+        workedMinutes: 200,
+      }),
+    ]);
+    const half = Math.round(DAILY / 2); // 13 636 364
+    expect(r.penaltyAmount).toBe(half);
+    const kinds = (r.breakdown as any).penalties.map((p: any) => p.kind);
+    expect(kinds).toContain('LATE');
+    expect(kinds).toContain('HALF_DAY');
+  });
+
+  it('4 soatdan ko‘p ishlagan bo‘lsa faqat daqiqa jarimasi (half-day emas)', () => {
+    const r = calc([
+      day('2026-07-08', { status: WorkDayStatus.LATE, lateMinutes: 30, workedMinutes: 450 }),
+    ]);
+    expect(r.penaltyAmount).toBe(Math.round(30 * MR));
+  });
+
+  // ---------- Kunlik chegara (cap) ----------
+
+  it('bir kunlik jami ushlanma kunlik stavkadan oshmaydi', () => {
+    const r = calc([
+      day('2026-07-09', { status: WorkDayStatus.LATE, lateMinutes: 500, workedMinutes: 40 }),
+    ]);
+    expect(r.penaltyAmount).toBe(Math.round(DAILY));
+  });
+
+  // ---------- Overtime ----------
+
+  it('2 soat overtime × 1.5 → 2 × soatlik × 1.5', () => {
+    const r = calc([day('2026-07-05', { overtimeMinutes: 120, workedMinutes: 600 })]);
+    expect(r.overtimeAmount).toBe(Math.round(120 * MR * 1.5)); // 10 227 273
+    const o = (r.breakdown as any).overtimePay[0];
+    expect(o.kind).toBe('WEEKDAY');
+    expect(o.formula).toContain('× 1.5');
+  });
+
+  it('overtime nofaol bo‘lsa qo‘shimcha haq to‘lanmaydi', () => {
+    const r = calc(
+      [day('2026-07-05', { overtimeMinutes: 120, workedMinutes: 600 })],
+      {},
+      { overtimeActive: false },
+    );
+    expect(r.overtimeAmount).toBe(0);
+  });
+
+  // ---------- Dam olish / bayram kuni ----------
+
+  it('dam olish kuni 8 soat ish → worked × daqiqalik × 2 (weekend policy)', () => {
+    const r = calc([
+      day('2026-07-11', { scheduledMinutes: 0, workedMinutes: 480 }), // shanba
+    ]);
+    expect(r.overtimeAmount).toBe(Math.round(480 * MR * 2)); // 54 545 455
+    expect((r.breakdown as any).overtimePay[0].kind).toBe('WEEKEND');
+  });
+
+  it('bayram kuni ish → holiday koeffitsiyenti (masalan 3x)', () => {
+    const r = calc(
+      [day('2026-07-20', { scheduledMinutes: 0, workedMinutes: 480 })],
+      { holidayDates: ['2026-07-20'] },
+      { holidayMultiplier: 3 },
+    );
+    expect(r.overtimeAmount).toBe(Math.round(480 * MR * 3));
+    expect((r.breakdown as any).overtimePay[0].kind).toBe('HOLIDAY');
+  });
+
+  it('bayram kuni kelmagan xodim absent bo‘lmaydi', () => {
+    // Bayram kuni scheduledMinutes=0 bo'lib keladi (recalc); jarima yo'q
+    const r = calc(
+      [day('2026-07-20', { scheduledMinutes: 0, workedMinutes: 0 })],
+      { holidayDates: ['2026-07-20'] },
+    );
+    expect(r.penaltyAmount).toBe(0);
+    expect(r.totalAmount).toBe(SALARY);
+  });
+
+  // ---------- Bonuslar va tuzatishlar ----------
+
+  it('FULL_ATTENDANCE bonusi — sababli kun uni buzmaydi', () => {
+    const r = calc(
+      [
+        day('2026-07-01'),
+        day('2026-07-02', { status: WorkDayStatus.ABSENT, workedMinutes: 0, isExcused: true }),
+      ],
+      {
+        bonusRules: [{ type: BonusType.FULL_ATTENDANCE, amount: 50_000_000, isActive: true }],
+      },
+    );
+    expect(r.bonusAmount).toBe(50_000_000);
+  });
+
+  it('avans va performance bonus tuzatishlari netga to‘g‘ri qo‘shiladi/ayiriladi', () => {
+    const r = calc([day('2026-07-01')], {
+      adjustments: [
+        { type: PayrollAdjustmentType.ADVANCE, amount: 50_000_000, note: 'Avans' },
+        { type: PayrollAdjustmentType.BONUS, amount: 20_000_000, note: 'Performance' },
+      ],
     });
+    expect(r.bonusAmount).toBe(20_000_000);
+    expect(r.totalAmount).toBe(SALARY + 20_000_000 - 50_000_000);
+    expect((r.breakdown as any).totals.deductions).toBe(50_000_000);
+  });
+
+  it('to‘liq stsenariy: net = oylik + bonus + OT − jarima − avans', () => {
+    const r = calc(
+      [
+        day('2026-07-03', { status: WorkDayStatus.LATE, lateMinutes: 12, workedMinutes: 468 }),
+        day('2026-07-08', { status: WorkDayStatus.LATE, lateMinutes: 31, workedMinutes: 449 }),
+        day('2026-07-14', { status: WorkDayStatus.ABSENT, workedMinutes: 0 }),
+        day('2026-07-05', { overtimeMinutes: 120, workedMinutes: 600 }),
+        day('2026-07-11', { scheduledMinutes: 0, workedMinutes: 480 }),
+      ],
+      {
+        adjustments: [{ type: PayrollAdjustmentType.ADVANCE, amount: 50_000_000, note: null }],
+      },
+    );
+    const expectedPenalty =
+      Math.round(12 * MR) + Math.round(31 * MR) + Math.round(DAILY);
+    const expectedOvertime = Math.round(120 * MR * 1.5) + Math.round(480 * MR * 2);
+    expect(r.penaltyAmount).toBe(expectedPenalty);
+    expect(r.overtimeAmount).toBe(expectedOvertime);
+    expect(r.totalAmount).toBe(SALARY + expectedOvertime - expectedPenalty - 50_000_000);
+  });
+
+  // ---------- HOURLY ----------
+
+  it('soatbay xodim: baza = ishlagan daqiqa × stavka; kechikish uchun QO‘SHIMCHA jarima yo‘q', () => {
+    const rate = 3_000_000; // 30 000 so'm/soat
+    const r = calcPayroll({
+      salaryType: SalaryType.HOURLY,
+      salaryAmount: rate,
+      monthExpectedMinutes: E,
+      monthWorkingDays: D,
+      holidayDates: [],
+      workDays: [
+        day('2026-07-01', { status: WorkDayStatus.LATE, lateMinutes: 30, workedMinutes: 450 }),
+      ],
+      policy: defaultPolicy(),
+      bonusRules: [],
+      adjustments: [],
+    });
+    expect(r.baseSalary).toBe(Math.round(450 * (rate / 60))); // 22 500 000
+    expect(r.penaltyAmount).toBe(0); // vaqt allaqachon pulda aks etgan
+  });
+
+  it('soatbay overtime: bazada 1x bor — faqat ustama (k−1) qo‘shiladi', () => {
+    const rate = 3_000_000;
+    const r = calcPayroll({
+      salaryType: SalaryType.HOURLY,
+      salaryAmount: rate,
+      monthExpectedMinutes: E,
+      monthWorkingDays: D,
+      holidayDates: [],
+      workDays: [day('2026-07-01', { overtimeMinutes: 120, workedMinutes: 600 })],
+      policy: defaultPolicy(),
+      bonusRules: [],
+      adjustments: [],
+    });
+    expect(r.baseSalary).toBe(Math.round(600 * (rate / 60)));
+    expect(r.overtimeAmount).toBe(Math.round(120 * (rate / 60) * 0.5));
+  });
+
+  // ---------- Foiz ishlatilmasligi kafolati ----------
+
+  it('jarima hech qachon oylikning foizi sifatida hisoblanmaydi', () => {
+    // 1 daqiqa kechikish — jarima aynan 1 daqiqalik ish haqi bo'lishi kerak
+    const r = calc(
+      [day('2026-07-03', { status: WorkDayStatus.LATE, lateMinutes: 1, workedMinutes: 479 })],
+      {},
+      { late: { active: true, thresholdMinutes: 0, multiplier: 1 } },
+    );
+    expect(r.penaltyAmount).toBe(Math.round(MR)); // ≈ 568 so'm, hech qanday 10%/20% emas
+    expect(r.penaltyAmount).toBeLessThan(SALARY * 0.001);
+  });
+});
+
+describe('monthScheduleStats — oylik ish vaqti avtomatik aniqlanadi', () => {
+  const MON_FRI = [1, 2, 3, 4, 5].map((dow) => ({
+    dayOfWeek: dow,
+    startTime: '09:00',
+    endTime: '18:00',
+    breakMinutes: 0,
+    lunchStart: '13:00',
+    lunchEnd: '14:00',
+  }));
+
+  it('2026-iyul, Dush–Juma 09:00–18:00 (tushlik 1s) → 23 kun × 8s = 184 soat', () => {
+    const s = monthScheduleStats(MON_FRI, '2026-07', new Set());
+    expect(s.workingDays).toBe(23);
+    expect(s.expectedMinutes).toBe(23 * 480);
+  });
+
+  it('bayram ish kunlari hisobidan chiqariladi', () => {
+    // 2026-07-20 — dushanba
+    const s = monthScheduleStats(MON_FRI, '2026-07', new Set(['2026-07-20']));
+    expect(s.workingDays).toBe(22);
+    expect(s.expectedMinutes).toBe(22 * 480); // = 176 soat (user misolidagi raqam)
+  });
+
+  it('tungi smena kunlari ham to‘g‘ri hisoblanadi (22:00–06:00)', () => {
+    const nights = [1, 2, 3, 4, 5].map((dow) => ({
+      dayOfWeek: dow,
+      startTime: '22:00',
+      endTime: '06:00',
+      breakMinutes: 0,
+    }));
+    const s = monthScheduleStats(nights, '2026-07', new Set());
+    expect(s.workingDays).toBe(23);
+    expect(s.expectedMinutes).toBe(23 * 480);
   });
 });

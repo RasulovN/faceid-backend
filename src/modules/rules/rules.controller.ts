@@ -137,6 +137,22 @@ class UpdateOvertimeRuleDto {
   @Max(5)
   multiplier?: number;
 
+  @ApiPropertyOptional({ default: 2, description: 'Dam olish kuni ishlaganlik koeffitsiyenti' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(5)
+  weekendMultiplier?: number;
+
+  @ApiPropertyOptional({ default: 2, description: 'Bayram kuni ishlaganlik koeffitsiyenti' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(5)
+  holidayMultiplier?: number;
+
   @ApiPropertyOptional({ default: false })
   @IsOptional()
   @IsBoolean()

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
@@ -11,13 +12,23 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { FastifyReply } from 'fastify';
 import { PayrollListQuery, PayrollService } from './payroll.service';
 import { PayrollExportService } from './payroll-export.service';
 import { CurrentUser, Permissions, RequestUser, SkipEnvelope } from '../../common/decorators';
 import { PERMISSIONS, roleHasPermission } from '../../common/constants/permissions';
-import { PayrollStatus, UserRole } from '../../common/enums';
+import { PayrollAdjustmentType, PayrollStatus, UserRole } from '../../common/enums';
 import { AppException } from '../../common/exceptions/app.exception';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 
@@ -44,6 +55,54 @@ class GenerateDto {
   @ApiProperty({ example: '2026-06' })
   @Matches(MONTH_REGEX, { message: 'month YYYY-MM formatida bo‘lishi kerak' })
   month: string;
+}
+
+class SummaryQueryDto {
+  @ApiProperty({ example: '2026-06' })
+  @Matches(MONTH_REGEX)
+  month: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
+}
+
+class AdjustmentsQueryDto {
+  @ApiProperty({ example: '2026-06' })
+  @Matches(MONTH_REGEX)
+  month: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  employeeId?: string;
+}
+
+class CreateAdjustmentDto {
+  @ApiProperty()
+  @IsUUID()
+  employeeId: string;
+
+  @ApiProperty({ example: '2026-06' })
+  @Matches(MONTH_REGEX)
+  periodMonth: string;
+
+  @ApiProperty({ enum: PayrollAdjustmentType })
+  @IsIn(Object.values(PayrollAdjustmentType))
+  type: PayrollAdjustmentType;
+
+  @ApiProperty({ description: 'Summa, tiyin (musbat)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  amount: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }
 
 class ExportQueryDto {
@@ -90,8 +149,49 @@ export class PayrollController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Oy uchun qo‘lda qayta generatsiya (DRAFT)' })
   async generate(@CurrentUser() user: RequestUser, @Body() dto: GenerateDto) {
-    const generated = await this.payrollService.generateForCompany(user.companyId!, dto.month);
+    const generated = await this.payrollService.generateForCompany(
+      user.companyId!,
+      dto.month,
+      user.id,
+    );
     return { month: dto.month, generated };
+  }
+
+  @Post('preview')
+  @Permissions(PERMISSIONS.PAYROLL_GENERATE)
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Oy hisobini saqlamasdan ko‘rish (yopishdan oldingi preview)' })
+  async preview(@CurrentUser() user: RequestUser, @Body() dto: GenerateDto) {
+    return this.payrollService.previewForCompany(user.companyId!, dto.month);
+  }
+
+  @Get('summary')
+  @Permissions(PERMISSIONS.PAYROLL_READ)
+  @ApiOperation({ summary: 'Oy bo‘yicha dashboard statistikasi (kartalar + trendlar)' })
+  async summary(@CurrentUser() user: RequestUser, @Query() query: SummaryQueryDto) {
+    return this.payrollService.summary(user.companyId!, query.month, query.branchId);
+  }
+
+  // ---------- Tuzatishlar (avans / qarz / ushlanma / mukofot) ----------
+
+  @Get('adjustments')
+  @Permissions(PERMISSIONS.PAYROLL_READ)
+  @ApiOperation({ summary: 'Oy bo‘yicha tuzatishlar ro‘yxati' })
+  async listAdjustments(@CurrentUser() user: RequestUser, @Query() query: AdjustmentsQueryDto) {
+    return this.payrollService.listAdjustments(user.companyId!, query.month, query.employeeId);
+  }
+
+  @Post('adjustments')
+  @Permissions(PERMISSIONS.PAYROLL_GENERATE)
+  @ApiOperation({ summary: 'Tuzatish qo‘shish (keyin oyni qayta generatsiya qiling)' })
+  async createAdjustment(@CurrentUser() user: RequestUser, @Body() dto: CreateAdjustmentDto) {
+    return this.payrollService.createAdjustment(user.companyId!, user.id, dto);
+  }
+
+  @Delete('adjustments/:id')
+  @Permissions(PERMISSIONS.PAYROLL_GENERATE)
+  async removeAdjustment(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.payrollService.removeAdjustment(user.companyId!, id);
   }
 
   @Get('export')

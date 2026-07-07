@@ -3,18 +3,42 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, In, IsNull, Raw, Repository } from 'typeorm';
 import { Company } from '../../entities/company.entity';
 import { Employee } from '../../entities/employee.entity';
+import { Holiday } from '../../entities/holiday.entity';
+import { PayrollAdjustment } from '../../entities/payroll-adjustment.entity';
 import { PayrollRecord } from '../../entities/payroll-record.entity';
 import { BonusRule, OvertimeRule, PenaltyRule } from '../../entities/rules.entities';
 import { WorkDay } from '../../entities/work-day.entity';
 import { AppException } from '../../common/exceptions/app.exception';
-import { EmployeeStatus, PayrollStatus } from '../../common/enums';
+import {
+  EmployeeStatus,
+  PayrollAdjustmentType,
+  PayrollStatus,
+  PenaltyType,
+  WorkDayStatus,
+} from '../../common/enums';
 import { Paginated, PaginationDto } from '../../common/dto/pagination.dto';
-import { calcPayroll } from './payroll-calc';
+import { AuditService } from '../audit/audit.service';
+import { WorkDayService } from '../workdays/workday.service';
+import {
+  calcPayroll,
+  defaultPolicy,
+  PayrollCalcResult,
+  PayrollPenaltyPolicy,
+  PayrollPolicy,
+} from './payroll-calc';
+import { monthBounds, monthScheduleStats } from './month-schedule';
 
 export interface PayrollListQuery extends PaginationDto {
   month?: string;
   branchId?: string;
   status?: PayrollStatus;
+}
+
+interface CompanyPayrollContext {
+  policy: PayrollPolicy;
+  bonusRules: BonusRule[];
+  holidaySet: Set<string>;
+  monthHolidays: string[];
 }
 
 @Injectable()
@@ -32,54 +56,150 @@ export class PayrollService {
     @InjectRepository(OvertimeRule)
     private readonly overtimeRepository: Repository<OvertimeRule>,
     @InjectRepository(Company) private readonly companyRepository: Repository<Company>,
+    @InjectRepository(Holiday) private readonly holidayRepository: Repository<Holiday>,
+    @InjectRepository(PayrollAdjustment)
+    private readonly adjustmentRepository: Repository<PayrollAdjustment>,
+    private readonly workDayService: WorkDayService,
+    private readonly auditService: AuditService,
   ) {}
 
-  // ---------- Generatsiya ----------
+  // ---------- Siyosat (rules → policy) ----------
 
-  /** Bitta kompaniya uchun oy bo'yicha DRAFT PayrollRecord'lar */
-  async generateForCompany(companyId: string, month: string): Promise<number> {
-    const [penaltyRules, bonusRules, overtimeRule] = await Promise.all([
-      this.penaltyRepository.find({ where: { companyId, isActive: true } }),
+  /**
+   * Jarima qoidalarini VAQT=PUL siyosatiga aylantirish.
+   * Faqat vaqtga asoslangan turlar ishlatiladi; legacy flat turlar (LATE_FIXED,
+   * LATE_PER_MINUTE, ABSENT) mavjud bo'lsa ular ham vaqt-asosli gate sifatida
+   * o'qiladi (threshold saqlanadi, flat summa e'tiborsiz) — foizsiz, koeffitsiyentsiz.
+   */
+  private buildPolicy(penaltyRules: PenaltyRule[], overtimeRule: OvertimeRule | null): PayrollPolicy {
+    const pick = (...types: PenaltyType[]): PayrollPenaltyPolicy => {
+      // Vaqt-asosli tur ustuvor; topilmasa legacy turdan gate olinadi
+      for (const type of types) {
+        const rule = penaltyRules.find((r) => r.type === type);
+        if (rule) {
+          return {
+            active: rule.isActive,
+            thresholdMinutes: rule.thresholdMinutes ?? 0,
+            // multiplier faqat *_SALARY turlarida ma'noli; legacy'da 1
+            multiplier:
+              type === PenaltyType.LATE_SALARY ||
+              type === PenaltyType.EARLY_LEAVE_SALARY ||
+              type === PenaltyType.ABSENT_SALARY
+                ? rule.multiplier || 1
+                : 1,
+          };
+        }
+      }
+      // Qoida yo'q — standart: faol, chegarasiz, 1x (vaqt qiymati)
+      return { active: true, thresholdMinutes: 0, multiplier: 1 };
+    };
+
+    return defaultPolicy({
+      overtimeActive: overtimeRule?.isActive ?? true,
+      weekdayOvertimeMultiplier: overtimeRule?.multiplier ?? 1.5,
+      weekendMultiplier: overtimeRule?.weekendMultiplier ?? 2,
+      holidayMultiplier: overtimeRule?.holidayMultiplier ?? 2,
+      late: pick(PenaltyType.LATE_SALARY, PenaltyType.LATE_PER_MINUTE, PenaltyType.LATE_FIXED),
+      earlyLeave: pick(PenaltyType.EARLY_LEAVE_SALARY),
+      absent: pick(PenaltyType.ABSENT_SALARY, PenaltyType.ABSENT),
+    });
+  }
+
+  private async buildContext(companyId: string, month: string): Promise<CompanyPayrollContext> {
+    const [penaltyRules, bonusRules, overtimeRule, holidays] = await Promise.all([
+      this.penaltyRepository.find({ where: { companyId } }),
       this.bonusRepository.find({ where: { companyId, isActive: true } }),
       this.overtimeRepository.findOne({ where: { companyId } }),
+      this.holidayRepository.find({ where: { companyId } }),
     ]);
-    const employees = await this.employeeRepository.find({
+    const holidaySet = new Set(holidays.map((h) => h.date));
+    return {
+      policy: this.buildPolicy(penaltyRules, overtimeRule),
+      bonusRules,
+      holidaySet,
+      monthHolidays: holidays.map((h) => h.date).filter((d) => d.startsWith(month)),
+    };
+  }
+
+  /** Bitta xodim uchun oy hisobi (saqlamasdan) */
+  private async calcForEmployee(
+    employee: Employee,
+    month: string,
+    ctx: CompanyPayrollContext,
+  ): Promise<PayrollCalcResult> {
+    const { monthStart, nextMonthStart } = monthBounds(month);
+    const [workDays, schedule, adjustments] = await Promise.all([
+      this.workDayRepository.find({
+        where: {
+          employeeId: employee.id,
+          date: Raw((alias) => `${alias} >= :monthStart AND ${alias} < :nextMonthStart`, {
+            monthStart,
+            nextMonthStart,
+          }),
+        },
+        order: { date: 'ASC' },
+      }),
+      this.workDayService.resolveSchedule(employee),
+      this.adjustmentRepository.find({
+        where: { employeeId: employee.id, periodMonth: month },
+        order: { createdAt: 'ASC' },
+      }),
+    ]);
+
+    // Oyning to'liq kutilgan ish vaqti — grafikdan; grafik bo'lmasa WorkDay
+    // qatorlaridan fallback (eski xatti-harakat bilan moslik).
+    let stats = schedule
+      ? monthScheduleStats(schedule.days, month, ctx.holidaySet)
+      : { expectedMinutes: 0, workingDays: 0 };
+    if (stats.workingDays === 0) {
+      const scheduledRows = workDays.filter(
+        (d) => d.scheduledMinutes > 0 && !ctx.holidaySet.has(d.date),
+      );
+      stats = {
+        expectedMinutes: scheduledRows.reduce((s, d) => s + d.scheduledMinutes, 0),
+        workingDays: scheduledRows.length,
+      };
+    }
+
+    return calcPayroll({
+      salaryType: employee.salaryType,
+      salaryAmount: employee.salaryAmount,
+      monthExpectedMinutes: stats.expectedMinutes,
+      monthWorkingDays: stats.workingDays,
+      holidayDates: ctx.monthHolidays,
+      workDays,
+      policy: ctx.policy,
+      bonusRules: ctx.bonusRules,
+      adjustments: adjustments.map((a) => ({ type: a.type, amount: a.amount, note: a.note })),
+    });
+  }
+
+  private async activeEmployees(companyId: string): Promise<Employee[]> {
+    return this.employeeRepository.find({
       where: {
         companyId,
         deletedAt: IsNull(),
         status: In([EmployeeStatus.ACTIVE, EmployeeStatus.VACATION]),
       },
+      order: { lastName: 'ASC' },
     });
-    // WorkDay.date — `date` tipi; LIKE (`~~`) unda ishlamaydi. Yarim-ochiq oy oralig'i:
-    // [oy boshi, keyingi oy boshi) — oy uzunligiga (fevral va h.k.) bog'liq emas.
-    const [year, mon] = month.split('-').map(Number);
-    const monthStart = `${month}-01`;
-    const nextYear = mon === 12 ? year + 1 : year;
-    const nextMon = mon === 12 ? 1 : mon + 1;
-    const nextMonthStart = `${nextYear}-${String(nextMon).padStart(2, '0')}-01`;
+  }
+
+  // ---------- Generatsiya ----------
+
+  /** Bitta kompaniya uchun oy bo'yicha DRAFT PayrollRecord'lar */
+  async generateForCompany(
+    companyId: string,
+    month: string,
+    generatedByUserId?: string,
+  ): Promise<number> {
+    const ctx = await this.buildContext(companyId, month);
+    const employees = await this.activeEmployees(companyId);
 
     let generated = 0;
     for (const employee of employees) {
       try {
-        const workDays = await this.workDayRepository.find({
-          where: {
-            employeeId: employee.id,
-            date: Raw((alias) => `${alias} >= :monthStart AND ${alias} < :nextMonthStart`, {
-              monthStart,
-              nextMonthStart,
-            }),
-          },
-          order: { date: 'ASC' },
-        });
-        const result = calcPayroll({
-          salaryType: employee.salaryType,
-          salaryAmount: employee.salaryAmount,
-          workDays,
-          penaltyRules,
-          bonusRules,
-          overtimeMultiplier: overtimeRule?.multiplier ?? 1.5,
-          overtimeActive: overtimeRule?.isActive ?? true,
-        });
+        const result = await this.calcForEmployee(employee, month, ctx);
 
         const existing = await this.payrollRepository.findOne({
           where: { employeeId: employee.id, periodMonth: month },
@@ -110,6 +230,21 @@ export class PayrollService {
         );
       }
     }
+
+    // Audit: kim, qachon, qaysi oy uchun, nechta yozuv hisobladi
+    await this.auditService.log({
+      userId: generatedByUserId ?? null,
+      companyId,
+      action: 'payroll.generate',
+      entityType: 'PayrollRecord',
+      newValue: {
+        month,
+        generated,
+        engine: 'time-v2',
+        generatedAt: new Date().toISOString(),
+      },
+    });
+
     return generated;
   }
 
@@ -121,6 +256,209 @@ export class PayrollService {
       total += await this.generateForCompany(company.id, month);
     }
     return total;
+  }
+
+  // ---------- Preview (yopishdan oldin ko'rish) ----------
+
+  /** Oy hisobini SAQLAMASDAN ko'rsatish — payroll yopilishidan oldingi preview */
+  async previewForCompany(companyId: string, month: string) {
+    const ctx = await this.buildContext(companyId, month);
+    const employees = await this.activeEmployees(companyId);
+
+    const rows: Array<Record<string, unknown>> = [];
+    const totals = { gross: 0, base: 0, penalty: 0, overtime: 0, bonus: 0, deductions: 0, net: 0 };
+
+    for (const employee of employees) {
+      try {
+        const r = await this.calcForEmployee(employee, month, ctx);
+        const t = (r.breakdown as { totals: Record<string, number> }).totals;
+        rows.push({
+          employeeId: employee.id,
+          fullName: employee.fullName,
+          position: employee.position,
+          salaryType: employee.salaryType,
+          salaryAmount: employee.salaryAmount,
+          workedMinutes: r.workedMinutes,
+          base: r.baseSalary,
+          penalty: r.penaltyAmount,
+          overtime: r.overtimeAmount,
+          bonus: r.bonusAmount,
+          deductions: t.deductions,
+          net: r.totalAmount,
+          summary: (r.breakdown as { summary: unknown }).summary,
+        });
+        totals.gross += t.gross;
+        totals.base += r.baseSalary;
+        totals.penalty += r.penaltyAmount;
+        totals.overtime += r.overtimeAmount;
+        totals.bonus += r.bonusAmount;
+        totals.deductions += t.deductions;
+        totals.net += r.totalAmount;
+      } catch (err) {
+        this.logger.error(
+          `Payroll preview xato (employee=${employee.id}): ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return { month, employees: rows, totals, employeeCount: rows.length };
+  }
+
+  // ---------- Dashboard summary ----------
+
+  /** Oy bo'yicha kompaniya statistikasi: kartalar + chart ma'lumotlari */
+  async summary(companyId: string, month: string, branchId?: string) {
+    const { monthStart, nextMonthStart } = monthBounds(month);
+
+    const records = await this.payrollRepository.find({
+      where: {
+        periodMonth: month,
+        employee: { companyId, ...(branchId ? { branchId } : {}) },
+      },
+      relations: { employee: true },
+    });
+
+    const workDays = await this.workDayRepository.find({
+      where: {
+        employee: { companyId, ...(branchId ? { branchId } : {}), deletedAt: IsNull() },
+        date: Raw((alias) => `${alias} >= :monthStart AND ${alias} < :nextMonthStart`, {
+          monthStart,
+          nextMonthStart,
+        }),
+      },
+    });
+
+    // Kunlik trendlar: davomat / kechikish / overtime
+    const byDate = new Map<
+      string,
+      { present: number; late: number; absent: number; lateMinutes: number; overtimeMinutes: number }
+    >();
+    for (const d of workDays) {
+      const row =
+        byDate.get(d.date) ??
+        { present: 0, late: 0, absent: 0, lateMinutes: 0, overtimeMinutes: 0 };
+      if (d.status === WorkDayStatus.LATE) {
+        row.late++;
+        row.present++;
+      } else if (d.status === WorkDayStatus.PRESENT && d.scheduledMinutes > 0) {
+        row.present++;
+      } else if (d.status === WorkDayStatus.ABSENT && !d.isExcused) {
+        row.absent++;
+      }
+      row.lateMinutes += d.isExcused ? 0 : d.lateMinutes;
+      row.overtimeMinutes += d.overtimeMinutes;
+      byDate.set(d.date, row);
+    }
+    const daily = [...byDate.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, v]) => ({ date, ...v }));
+
+    // Kartalar va taqsimot
+    const totals = {
+      employees: records.length,
+      base: records.reduce((s, r) => s + r.baseSalary, 0),
+      penalty: records.reduce((s, r) => s + r.penaltyAmount, 0),
+      overtime: records.reduce((s, r) => s + r.overtimeAmount, 0),
+      bonus: records.reduce((s, r) => s + r.bonusAmount, 0),
+      net: records.reduce((s, r) => s + r.totalAmount, 0),
+      workedMinutes: records.reduce((s, r) => s + r.workedMinutes, 0),
+    };
+    const statusCounts = {
+      DRAFT: records.filter((r) => r.status === PayrollStatus.DRAFT).length,
+      APPROVED: records.filter((r) => r.status === PayrollStatus.APPROVED).length,
+      PAID: records.filter((r) => r.status === PayrollStatus.PAID).length,
+    };
+
+    // Ish haqi taqsimoti (net bo'yicha gistogramma, so'mda)
+    const nets = records.map((r) => r.totalAmount).sort((a, b) => a - b);
+    const distribution: Array<{ range: string; count: number }> = [];
+    if (nets.length > 0) {
+      const max = nets[nets.length - 1];
+      const bucketCount = Math.min(6, Math.max(3, Math.ceil(Math.sqrt(nets.length))));
+      const bucketSize = Math.max(1, Math.ceil(max / bucketCount / 100_00000) * 100_00000); // 100k so'm qadam
+      for (let from = 0; from <= max; from += bucketSize) {
+        const to = from + bucketSize;
+        distribution.push({
+          range: `${Math.round(from / 100_0000) / 100}–${Math.round(to / 100_0000) / 100} mln`,
+          count: nets.filter((n) => n >= from && n < to).length,
+        });
+      }
+    }
+
+    return { month, totals, statusCounts, daily, distribution };
+  }
+
+  // ---------- Tuzatishlar (avans / qarz / ushlanma / mukofot) ----------
+
+  async listAdjustments(companyId: string, month: string, employeeId?: string) {
+    const items = await this.adjustmentRepository.find({
+      where: { companyId, periodMonth: month, ...(employeeId ? { employeeId } : {}) },
+      relations: { employee: true },
+      order: { createdAt: 'DESC' },
+    });
+    return items.map((a) => ({
+      id: a.id,
+      employee: a.employee
+        ? { id: a.employee.id, fullName: a.employee.fullName }
+        : { id: a.employeeId, fullName: '' },
+      periodMonth: a.periodMonth,
+      type: a.type,
+      amount: a.amount,
+      note: a.note,
+      createdAt: a.createdAt,
+    }));
+  }
+
+  async createAdjustment(
+    companyId: string,
+    userId: string,
+    dto: {
+      employeeId: string;
+      periodMonth: string;
+      type: PayrollAdjustmentType;
+      amount: number;
+      note?: string;
+    },
+  ) {
+    const employee = await this.employeeRepository.findOne({
+      where: { id: dto.employeeId, companyId, deletedAt: IsNull() },
+    });
+    if (!employee) throw AppException.notFound('Xodim topilmadi');
+
+    const record = await this.payrollRepository.findOne({
+      where: { employeeId: dto.employeeId, periodMonth: dto.periodMonth },
+    });
+    if (record && record.status !== PayrollStatus.DRAFT) {
+      throw AppException.conflict(
+        'Bu oy uchun oylik allaqachon tasdiqlangan — tuzatish kiritib bo‘lmaydi',
+      );
+    }
+
+    const adjustment = await this.adjustmentRepository.save(
+      this.adjustmentRepository.create({
+        companyId,
+        employeeId: dto.employeeId,
+        periodMonth: dto.periodMonth,
+        type: dto.type,
+        amount: dto.amount,
+        note: dto.note ?? null,
+        createdByUserId: userId,
+      }),
+    );
+    return adjustment;
+  }
+
+  async removeAdjustment(companyId: string, id: string) {
+    const adjustment = await this.adjustmentRepository.findOne({ where: { id, companyId } });
+    if (!adjustment) throw AppException.notFound('Tuzatish topilmadi');
+    const record = await this.payrollRepository.findOne({
+      where: { employeeId: adjustment.employeeId, periodMonth: adjustment.periodMonth },
+    });
+    if (record && record.status !== PayrollStatus.DRAFT) {
+      throw AppException.conflict('Tasdiqlangan oy tuzatishini o‘chirib bo‘lmaydi');
+    }
+    await this.adjustmentRepository.remove(adjustment);
+    return { ok: true };
   }
 
   // ---------- CRUD ----------

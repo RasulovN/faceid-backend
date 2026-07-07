@@ -1,5 +1,30 @@
+# Bog'liqliklar
 node_modules/
+
+# Build natijalari
 dist/
-coverage/
+
+# Env — faqat .env.example commit qilinadi
 .env
+.env.local
+.env.*.local
+
+# Loglar
 *.log
+npm-debug.log*
+pnpm-debug.log*
+logs/
+
+# Test/coverage
+coverage/
+.nyc_output/
+
+# TypeScript
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

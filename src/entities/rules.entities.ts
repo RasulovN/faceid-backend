@@ -82,8 +82,17 @@ export class OvertimeRule {
   @Column({ type: 'uuid' })
   companyId: string;
 
+  /** Oddiy ish kunidagi overtime koeffitsiyenti (1.5 = bir yarim baravar) */
   @Column({ type: 'float', default: 1.5 })
   multiplier: number;
+
+  /** Dam olish kuni (grafikda yo'q kun) ishlaganlik koeffitsiyenti */
+  @Column({ type: 'float', default: 2 })
+  weekendMultiplier: number;
+
+  /** Bayram kuni ishlaganlik koeffitsiyenti */
+  @Column({ type: 'float', default: 2 })
+  holidayMultiplier: number;
 
   @Column({ type: 'boolean', default: false })
   requiresApproval: boolean;

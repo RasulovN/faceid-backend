@@ -42,6 +42,14 @@ export class RulesService {
           multiplier: 1,
           isActive: true,
         }),
+        this.penaltyRepository.create({
+          companyId,
+          type: PenaltyType.EARLY_LEAVE_SALARY,
+          amount: 0,
+          thresholdMinutes: 0,
+          multiplier: 1,
+          isActive: true,
+        }),
       ]);
     }
     const hasOvertime = await this.overtimeRepository.count({ where: { companyId } });
@@ -131,7 +139,13 @@ export class RulesService {
 
   async updateOvertime(
     companyId: string,
-    dto: { multiplier?: number; requiresApproval?: boolean; isActive?: boolean },
+    dto: {
+      multiplier?: number;
+      weekendMultiplier?: number;
+      holidayMultiplier?: number;
+      requiresApproval?: boolean;
+      isActive?: boolean;
+    },
   ): Promise<OvertimeRule> {
     const rule = await this.getOvertime(companyId);
     Object.assign(rule, dto);

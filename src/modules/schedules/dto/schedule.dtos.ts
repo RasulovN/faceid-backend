@@ -29,16 +29,29 @@ export class ScheduleDayDto {
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
   startTime: string;
 
-  @ApiProperty({ example: '18:00' })
+  @ApiProperty({
+    example: '18:00',
+    description: 'endTime <= startTime bo‘lsa tungi smena (keyingi kunga o‘tadi)',
+  })
   @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
   endTime: string;
 
-  @ApiProperty({ example: 60 })
+  @ApiProperty({ example: 60, description: 'Legacy tanaffus; tushlik oynasi bo‘lsa e‘tiborsiz' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   @Max(480)
   breakMinutes: number;
+
+  @ApiPropertyOptional({ example: '13:00', description: 'Tushlik boshlanishi' })
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  lunchStart?: string;
+
+  @ApiPropertyOptional({ example: '14:00', description: 'Tushlik tugashi' })
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  lunchEnd?: string;
 }
 
 export class CreateScheduleDto {
@@ -76,6 +89,17 @@ export class CreateScheduleDto {
   @Min(0)
   @Max(120)
   gracePeriodMinutes?: number;
+
+  @ApiPropertyOptional({
+    default: 0,
+    description: 'Moslashuvchan kelish oynasi (daqiqa): start..start+flexible kechikish emas',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(240)
+  flexibleMinutes?: number;
 }
 
 export class UpdateScheduleDto extends PartialType(CreateScheduleDto) {}
