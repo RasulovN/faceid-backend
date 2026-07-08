@@ -78,10 +78,18 @@ export class AttendanceController {
   @HttpCode(200)
   @ApiBearerAuth()
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Mobil check-in/out: geofence → mock → verify → event' })
+  @ApiOperation({
+    summary: 'Mobil check-in/out: geofence → mock → burst liveness+verify → event',
+    description:
+      'Yangi klientlar `frames` nomi bilan 3..8 ta ketma-ket kadr yuboradi ' +
+      '(burst: passiv anti-spoof + bosh burilishi challenge). Eski klientlarning ' +
+      'bitta `selfie` fayli ham qabul qilinadi (faqat passiv liveness).',
+  })
   async mobileCheck(@CurrentUser() user: RequestUser, @Req() req: FastifyRequest) {
-    const { files, fields } = await parseMultipart(req, { maxFiles: 1, imagesOnly: true });
-    if (files.length === 0) throw AppException.validation('`selfie` fayli yuborilmagan');
+    const { files, fields } = await parseMultipart(req, { maxFiles: 8, imagesOnly: true });
+    if (files.length === 0) {
+      throw AppException.validation('`frames` (yoki `selfie`) fayllari yuborilmagan');
+    }
     const latitude = Number(fields.latitude);
     const longitude = Number(fields.longitude);
     const accuracy = Number(fields.accuracy ?? 0);
@@ -92,13 +100,17 @@ export class AttendanceController {
     if (!Object.values(AttendanceEventType).includes(type)) {
       throw AppException.validation('type CHECK_IN yoki CHECK_OUT bo‘lishi kerak');
     }
-    return this.attendanceService.mobileCheck(user, files[0].buffer, {
-      latitude,
-      longitude,
-      accuracy,
-      isMockLocation: fields.isMockLocation === 'true' || fields.isMockLocation === '1',
-      type,
-    });
+    return this.attendanceService.mobileCheck(
+      user,
+      files.map((f) => f.buffer),
+      {
+        latitude,
+        longitude,
+        accuracy,
+        isMockLocation: fields.isMockLocation === 'true' || fields.isMockLocation === '1',
+        type,
+      },
+    );
   }
 
   // ---------- Panel ----------

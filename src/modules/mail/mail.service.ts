@@ -6,9 +6,18 @@ import {
   leadApprovedTemplate,
   leadRejectedTemplate,
   passwordResetTemplate,
+  paymentRevokedTemplate,
+  paymentSuccessTemplate,
   subscriptionExpiringTemplate,
   verificationEmailTemplate,
 } from './mail.templates';
+
+/** tiyin → "1 250 000 so'm" (email uchun) */
+function formatSom(tiyin: number): string {
+  return `${Math.round(tiyin / 100)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} so'm`;
+}
 
 @Injectable()
 export class MailService {
@@ -93,6 +102,37 @@ export class MailService {
       to,
       `FaceID — Obuna tugashiga ${daysLeft} kun qoldi`,
       subscriptionExpiringTemplate(companyName, daysLeft, endsAt.toISOString().slice(0, 10), payUrl),
+    );
+  }
+
+  /** To'lov muvaffaqiyatli bajarilganda — chek havolasi bilan tasdiq xati */
+  async sendPaymentSuccess(
+    to: string,
+    companyName: string,
+    amountTiyin: number,
+    tariffName: string,
+    months: number,
+  ): Promise<void> {
+    const receiptUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/app/subscription`;
+    await this.send(
+      to,
+      `FaceID — To'lov qabul qilindi (${formatSom(amountTiyin)})`,
+      paymentSuccessTemplate(companyName, formatSom(amountTiyin), tariffName, months, receiptUrl),
+    );
+  }
+
+  /** To'lov Payme tomonidan qaytarilganda (cancel-after-perform) */
+  async sendPaymentRevoked(
+    to: string,
+    companyName: string,
+    amountTiyin: number,
+    tariffName: string,
+  ): Promise<void> {
+    const payUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/app/subscription`;
+    await this.send(
+      to,
+      `FaceID — To'lov qaytarildi (${formatSom(amountTiyin)})`,
+      paymentRevokedTemplate(companyName, formatSom(amountTiyin), tariffName, payUrl),
     );
   }
 

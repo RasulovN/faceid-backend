@@ -55,6 +55,8 @@ export const envValidationSchema = Joi.object({
   INTERNAL_API_KEY: Joi.string().required(),
   FACE_MATCH_THRESHOLD: Joi.number().min(0).max(1).default(0.5),
   LIVENESS_THRESHOLD: Joi.number().min(0).max(1).default(0.7),
+  // Mobil burst verifikatsiyasida aktiv challenge: 'turn' (bosh burilishi) yoki 'none'
+  FACE_CHALLENGE: Joi.string().valid('turn', 'none').default('turn'),
   FACE_SERVICE_DATABASE_URL: Joi.string().optional(),
   FACE_USE_GPU: Joi.boolean().default(false),
   FACE_SERVICE_PORT: Joi.number().port().default(8000),
@@ -63,6 +65,10 @@ export const envValidationSchema = Joi.object({
   // Rejim almashtirgich: true/1 = TEST (sandbox), false/0 = PRODUCTION.
   // Kalit va checkout URL rejimga qarab avtomatik tanlanadi (payme.config.ts).
   PAYME_TEST_MODE: Joi.boolean().truthy('1').falsy('0').default(true),
+  // Lokal (tizim ichidagi) checkout sahifasi: 1 → havola CLIENT_URL/payme ga boradi,
+  // to'lov shu tizimning o'zidagi Payme-uslub sandbox interfeysida bajariladi.
+  // FAQAT PAYME_TEST_MODE=1 da kuchga kiradi (production'da e'tiborsiz qoldiriladi).
+  PAYME_LOCAL_CHECKOUT: Joi.boolean().truthy('1').falsy('0').default(false),
   PAYME_MERCHANT_ID: Joi.string().allow('').default(''),
   PAYME_MERCHANT_KEY: Joi.string().allow('').default(''),
   PAYME_TEST_MERCHANT_ID: Joi.string().allow('').default(''),
@@ -70,6 +76,21 @@ export const envValidationSchema = Joi.object({
   // Ixtiyoriy override'lar — bo'sh qolsa rejim bo'yicha standart URL ishlatiladi
   PAYME_CHECKOUT_URL: Joi.string().uri().allow('').default(''),
   PAYME_TEST_CHECKOUT_URL: Joi.string().uri().allow('').default(''),
+  // Payme kabinetidagi kassa "account" maydoni nomi (checkout ac.<field> va
+  // Merchant API account[<field>]). Mavjud (boshqa loyihaning) kassasi bilan
+  // ishlaganda o'sha kassaning maydoniga moslanadi (masalan order_id).
+  PAYME_ACCOUNT_FIELD: Joi.string()
+    .pattern(/^[a-zA-Z0-9_]+$/)
+    .default('payment_id'),
+  // Payme Merchant API endpointiga ruxsat etilgan IP'lar (vergul bilan, CIDR ham
+  // bo'ladi, masalan: 185.234.113.0/27). Bo'sh = tekshiruv o'chiq (faqat Basic auth).
+  PAYME_ALLOWED_IPS: Joi.string().allow('').default(''),
+  // Subscribe API (tizim ichidagi karta to'lovi — modal). Odatda asosiy kassa
+  // ma'lumotlari ishlatiladi; Payme alohida "virtual terminal" bergan bo'lsa
+  // shu yerda almashtiriladi. URL bo'sh — rejim bo'yicha avtomatik.
+  PAYME_SUBSCRIBE_MERCHANT_ID: Joi.string().allow('').default(''),
+  PAYME_SUBSCRIBE_KEY: Joi.string().allow('').default(''),
+  PAYME_SUBSCRIBE_URL: Joi.string().uri().allow('').default(''),
   // Fiskalizatsiya: MXIK (IKPU) 17 xonali — JS number aniqligidan katta, string saqlanadi
   PAYME_FISCAL_MXIK: Joi.string().allow('').default(''),
   PAYME_FISCAL_PACKAGE_CODE: Joi.string().allow('').default(''),

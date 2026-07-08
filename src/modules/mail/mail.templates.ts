@@ -93,6 +93,44 @@ export function subscriptionExpiringTemplate(
   );
 }
 
+export function paymentSuccessTemplate(
+  companyName: string,
+  amountLabel: string,
+  tariffName: string,
+  months: number,
+  receiptUrl: string,
+): string {
+  return layout(
+    'To‘lov qabul qilindi ✅',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">To‘lovingiz muvaffaqiyatli qabul qilindi va obunangiz faollashtirildi:</p>
+     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;width:100%;">
+       <tr><td style="padding:16px 20px;">
+         <div style="font-size:13px;color:#6b7280;">Tarif</div>
+         <div style="font-size:16px;color:#111827;font-weight:600;margin-bottom:12px;">${tariffName} · ${months} oy</div>
+         <div style="font-size:13px;color:#6b7280;">Summa</div>
+         <div style="font-size:20px;color:#059669;font-weight:700;">${amountLabel}</div>
+       </td></tr>
+     </table>
+     ${button(receiptUrl, 'To‘lov chekini ko‘rish')}`,
+  );
+}
+
+export function paymentRevokedTemplate(
+  companyName: string,
+  amountLabel: string,
+  tariffName: string,
+  payUrl: string,
+): string {
+  return layout(
+    'To‘lov qaytarildi',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;"><b>${tariffName}</b> tarifi uchun <b>${amountLabel}</b> miqdoridagi to‘lov Payme tomonidan bekor qilindi (qaytarildi). Obuna muddati mos ravishda qisqartirildi.</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Xizmat uzluksiz davom etishi uchun to‘lovni qaytadan amalga oshirishingiz mumkin:</p>
+     ${button(payUrl, 'To‘lovni amalga oshirish')}`,
+  );
+}
+
 export function leadApprovedTemplate(name: string, registerUrl: string): string {
   return layout(
     'Murojaatingiz tasdiqlandi 🎉',

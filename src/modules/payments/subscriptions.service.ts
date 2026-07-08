@@ -11,7 +11,7 @@ import { PaymeState, SubscriptionStatus } from '../../common/enums';
 import { Paginated, PaginationDto } from '../../common/dto/pagination.dto';
 import { computeMonthlyPrice, CustomLimits } from '../tariffs/pricing';
 import { TariffLimitsService } from '../tariffs/tariff-limits.service';
-import { PAYME_REASON_TIMEOUT } from './payme.service';
+import { PAYME_REASON_TIMEOUT, PAYME_REASON_USER_CANCEL } from './payme.service';
 import { PaymeConfig } from './payme.config';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -169,20 +169,105 @@ export class SubscriptionsService {
       );
     }
 
-    // To'lovdan so'ng foydalanuvchi obuna sahifasiga qaytadi — u yerda status poll qilinadi
+    return { paymentId: payment.id, amount, checkoutUrl: this.buildCheckoutUrl(payment) };
+  }
+
+  /** Payme checkout havolasi: base64(m=...;ac.<field>=...;a=...;c=...;ct=...;l=uz) */
+  private buildCheckoutUrl(payment: Payment): string {
     const clientUrl = (this.config.get<string>('CLIENT_URL') ?? '').replace(/\/+$/, '');
-    const callbackUrl = `${clientUrl}/app/subscription?paymentId=${payment.id}`;
     const parts = [
       `m=${this.paymeConfig.merchantId}`,
-      `ac.payment_id=${payment.id}`,
-      `a=${amount}`,
-      `c=${encodeURIComponent(callbackUrl)}`,
-      'ct=15000', // muvaffaqiyatli to'lovdan keyin 15s ichida callback'ga qaytarish
-      'l=uz',
+      // Maydon nomi kassa kabinetidagi bilan BIR XIL bo'lishi shart (PAYME_ACCOUNT_FIELD)
+      `ac.${this.paymeConfig.accountField}=${payment.id}`,
+      `a=${payment.amount}`,
     ];
-    const checkoutUrl = `${this.paymeConfig.checkoutUrl}/${Buffer.from(parts.join(';'), 'utf8').toString('base64')}`;
+    // To'lovdan so'ng qaytish (c/ct): lokal sandbox'da har doim; haqiqiy Payme
+    // checkout'ida faqat ochiq HTTPS manzil — localhost'ni Payme ocholmaydi.
+    const isPublicHttps = clientUrl.startsWith('https://') && !/localhost|127\.0\.0\.1/.test(clientUrl);
+    if (this.paymeConfig.isLocalCheckout || isPublicHttps) {
+      const callbackUrl = `${clientUrl}/app/subscription?paymentId=${payment.id}`;
+      parts.push(`c=${encodeURIComponent(callbackUrl)}`, 'ct=15000');
+    }
+    parts.push('l=uz');
+    return `${this.paymeConfig.checkoutUrl}/${Buffer.from(parts.join(';'), 'utf8').toString('base64')}`;
+  }
 
-    return { paymentId: payment.id, amount, checkoutUrl };
+  /**
+   * Qayta to'lash: tarixdagi KUTILAYOTGAN to'lov uchun yangi checkout havolasi.
+   * Xuddi shu payment yozuvi ishlatiladi (summa o'sha paytdagi narxda qoladi).
+   */
+  async retryCheckout(companyId: string, paymentId: string) {
+    if (!this.paymeConfig.isConfigured) {
+      throw AppException.validation(
+        "To'lov tizimi hali sozlanmagan. Administratorga murojaat qiling.",
+      );
+    }
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId, companyId },
+    });
+    if (!payment) throw AppException.notFound("To'lov topilmadi");
+    if (payment.state === PaymeState.PERFORMED) {
+      throw AppException.validation("Bu to'lov allaqachon amalga oshirilgan");
+    }
+    if (payment.state === PaymeState.CREATED) {
+      throw AppException.validation(
+        "Bu to'lov bo'yicha Payme'da faol tranzaksiya bor — yakunlanishini kuting",
+      );
+    }
+    if (payment.state < 0) {
+      throw AppException.validation(
+        "Bekor qilingan to'lovni qayta ochib bo'lmaydi — tarifni tanlab yangi to'lov boshlang",
+      );
+    }
+    return { paymentId: payment.id, amount: payment.amount, checkoutUrl: this.buildCheckoutUrl(payment) };
+  }
+
+  /**
+   * Foydalanuvchi kutilayotgan to'lovni bekor qiladi. Faqat Payme'ga hali
+   * ulanmagan (PENDING, tranzaksiyasiz) to'lovlar bekor qilinadi — shartli
+   * UPDATE poyga holatidan himoya qiladi (parallel CreateTransaction bilan).
+   */
+  async cancelPendingPayment(companyId: string, paymentId: string) {
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId, companyId },
+      relations: { tariff: true },
+    });
+    if (!payment) throw AppException.notFound("To'lov topilmadi");
+    if (payment.state < 0) return toPaymentDto(payment); // allaqachon bekor — idempotent
+    if (payment.state === PaymeState.PERFORMED) {
+      throw AppException.validation(
+        "To'lov allaqachon amalga oshirilgan — uni bekor qilib bo'lmaydi",
+      );
+    }
+    if (payment.state === PaymeState.CREATED || payment.paymeTransactionId) {
+      throw AppException.validation(
+        "Bu to'lov bo'yicha Payme'da faol tranzaksiya bor — u yakunlanishi yoki bekor bo'lishini kuting",
+      );
+    }
+
+    const result = await this.paymentRepository.update(
+      {
+        id: payment.id,
+        companyId,
+        state: PaymeState.PENDING,
+        paymeTransactionId: IsNull(),
+      },
+      {
+        state: PaymeState.CANCELLED,
+        reason: PAYME_REASON_USER_CANCEL,
+        cancelTime: new Date(),
+      },
+    );
+    if (!result.affected) {
+      // Orada holat o'zgargan (masalan, Payme tranzaksiya ochib qo'ygan)
+      throw AppException.validation(
+        "To'lov holati o'zgarib qoldi — sahifani yangilab qaytadan urinib ko'ring",
+      );
+    }
+    payment.state = PaymeState.CANCELLED;
+    payment.reason = PAYME_REASON_USER_CANCEL;
+    payment.cancelTime = new Date();
+    return toPaymentDto(payment);
   }
 
   /** Bitta to'lov holati — to'lovdan qaytgan sahifa poll qilishi uchun */

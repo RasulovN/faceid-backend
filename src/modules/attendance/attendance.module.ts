@@ -12,6 +12,7 @@ import { WorkDaysModule } from '../workdays/workdays.module';
 import { AttendanceController } from './attendance.controller';
 import { AttendanceExportService } from './attendance-export.service';
 import { AttendanceService } from './attendance.service';
+import { FaceCheckGateway } from './face-check.gateway';
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { AttendanceService } from './attendance.service';
     WorkDaysModule,
   ],
   controllers: [AttendanceController],
-  providers: [AttendanceService, AttendanceExportService, DeviceTokenGuard],
+  providers: [AttendanceService, AttendanceExportService, DeviceTokenGuard, FaceCheckGateway],
   exports: [AttendanceService],
 })
 export class AttendanceModule {}

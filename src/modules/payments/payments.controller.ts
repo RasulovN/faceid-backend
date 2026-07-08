@@ -8,9 +8,10 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import { FastifyReply } from 'fastify';
+import { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
@@ -19,12 +20,15 @@ import {
   IsIn,
   IsInt,
   IsOptional,
+  IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { PaymeRequest, PaymeService } from './payme.service';
+import { PaymeSubscribeService } from './payme-subscribe.service';
 import { PaymentReceiptService } from './payment-receipt.service';
 import {
   AdminPaymentStateFilter,
@@ -87,6 +91,30 @@ class CheckoutDto {
   customLimits?: CustomLimitsDto;
 }
 
+class CardChargeDto {
+  @ApiProperty({ example: '8600 4954 7331 6478' })
+  @IsString()
+  @MaxLength(32)
+  card: string;
+
+  @ApiProperty({ example: '03/99' })
+  @IsString()
+  @MaxLength(8)
+  expire: string;
+}
+
+class CardConfirmDto {
+  @ApiProperty({ description: 'cards.create qaytargan karta tokeni' })
+  @IsString()
+  @MaxLength(512)
+  token: string;
+
+  @ApiProperty({ example: '666666' })
+  @IsString()
+  @MaxLength(8)
+  code: string;
+}
+
 class AdminPaymentsQueryDto extends PaginationDto {
   @ApiPropertyOptional()
   @IsOptional()
@@ -121,6 +149,7 @@ class AdminSubscriptionsQueryDto extends PaginationDto {
 export class PaymentsController {
   constructor(
     private readonly paymeService: PaymeService,
+    private readonly paymeSubscribeService: PaymeSubscribeService,
     private readonly subscriptionsService: SubscriptionsService,
     private readonly receiptService: PaymentReceiptService,
   ) {}
@@ -133,8 +162,13 @@ export class PaymentsController {
   @SkipAudit()
   @HttpCode(200)
   @ApiOperation({ summary: 'Payme Merchant API (JSON-RPC, Basic auth: Paycom:MERCHANT_KEY)' })
-  async payme(@Body() body: PaymeRequest, @Headers('authorization') authorization?: string) {
-    return this.paymeService.handle(body, authorization);
+  async payme(
+    @Body() body: PaymeRequest,
+    @Req() req: FastifyRequest,
+    @Headers('authorization') authorization?: string,
+  ) {
+    // req.ip — trustProxy yoqilgani uchun nginx orqasida ham haqiqiy mijoz IP'si
+    return this.paymeService.handle(body, authorization, req.ip);
   }
 
   // ---------- Kompaniya to'lovlari ----------
@@ -156,6 +190,64 @@ export class PaymentsController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.subscriptionsService.paymentStatus(user.companyId!, id);
+  }
+
+  @Post('payments/:id/card')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.SUBSCRIPTIONS_CHECKOUT)
+  @SkipSubscriptionCheck()
+  @SkipAudit() // karta ma'lumotlari audit-logga tushmasin
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Subscribe API: kartani tokenlash + SMS yuborish (modal ichidagi to'lov)",
+  })
+  async chargeCard(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CardChargeDto,
+  ) {
+    return this.paymeSubscribeService.chargeCard(user.companyId!, id, dto.card, dto.expire);
+  }
+
+  @Post('payments/:id/card/confirm')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.SUBSCRIPTIONS_CHECKOUT)
+  @SkipSubscriptionCheck()
+  @SkipAudit()
+  @HttpCode(200)
+  @ApiOperation({ summary: "Subscribe API: SMS tasdiqlash → receipts.create + receipts.pay" })
+  async confirmCard(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CardConfirmDto,
+  ) {
+    return this.paymeSubscribeService.confirmAndPay(user.companyId!, id, dto.token, dto.code);
+  }
+
+  @Post('payments/:id/cancel')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.SUBSCRIPTIONS_CHECKOUT)
+  @SkipSubscriptionCheck()
+  @HttpCode(200)
+  @ApiOperation({ summary: "Kutilayotgan (Payme'ga ulanmagan) to'lovni bekor qilish" })
+  async cancelPayment(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.subscriptionsService.cancelPendingPayment(user.companyId!, id);
+  }
+
+  @Post('payments/:id/checkout')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.SUBSCRIPTIONS_CHECKOUT)
+  @SkipSubscriptionCheck()
+  @HttpCode(200)
+  @ApiOperation({ summary: "Qayta to'lash — kutilayotgan to'lov uchun yangi checkout havolasi" })
+  async retryCheckout(
+    @CurrentUser() user: RequestUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.subscriptionsService.retryCheckout(user.companyId!, id);
   }
 
   @Get('payments/:id/receipt')

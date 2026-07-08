@@ -26,7 +26,13 @@ interface SocketAuthData {
   deviceId?: string;
 }
 
-@WebSocketGateway({ path: '/ws', cors: { origin: true, credentials: true } })
+// maxHttpBufferSize: mobil real-time yuz kadri (base64 jpeg) 1MB standart
+// limitdan oshishi mumkin — oshsa socket.io ulanishni jimgina uzadi.
+@WebSocketGateway({
+  path: '/ws',
+  cors: { origin: true, credentials: true },
+  maxHttpBufferSize: 6_000_000,
+})
 export class EventsGateway implements OnGatewayInit, OnGatewayConnection {
   private readonly logger = new Logger(EventsGateway.name);
 

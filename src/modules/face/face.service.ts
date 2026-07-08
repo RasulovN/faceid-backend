@@ -22,6 +22,54 @@ export interface VerifyResult {
   match: boolean;
   confidence: number;
   livenessScore: number;
+  livenessPassed: boolean;
+  /** Face-service xato kodi: FACE_NOT_FOUND / LIVENESS_FAILED / INVALID_IMAGE */
+  errorCode?: string;
+}
+
+export interface AnalyzeResult {
+  found: boolean;
+  multiple: boolean;
+  /** Normalized bbox (kadr o'lchamiga nisbatan 0..1) */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  yaw: number | null;
+  pitch: number | null;
+  roll: number | null;
+  /** Eye aspect ratio — blink (jonlilik) dalili uchun */
+  ear: number | null;
+  detScore: number;
+  /** Yuz hududi o'rtacha yorqinligi 0..255 */
+  brightness: number | null;
+  /** Laplacian keskinligi (xiralik nazorati) */
+  sharpness: number | null;
+  /** Shu kadrning passiv anti-spoof skori (0..1) */
+  livenessScore: number | null;
+  /** 106 ta normalized [x,y] landmark — mesh rendering uchun */
+  landmarks: number[][] | null;
+  /** Kadrga amalda qo'llangan rotatsiya (kalibrlash natijasi, gradus) */
+  rotationApplied: number;
+  frameWidth: number;
+  frameHeight: number;
+  errorCode?: string;
+}
+
+export interface VerifyLiveResult {
+  /** Yakuniy qaror: identity mos VA liveness o'tdi VA challenge bajarildi */
+  match: boolean;
+  confidence: number;
+  livenessScore: number;
+  livenessPassed: boolean;
+  challengePassed: boolean;
+  /** Kadrlararo "bir odam" izchilligi (0..1) */
+  consistency: number;
+  framesValid: number;
+  framesTotal: number;
+  /** FACE_NOT_FOUND / LIVENESS_FAILED / CHALLENGE_FAILED / FACE_NOT_RECOGNIZED */
+  errorCode?: string;
+  reasons: string[];
 }
 
 /** Python face-service mikroservisi bilan ichki HTTP klient */
@@ -130,13 +178,18 @@ export class FaceService {
     };
   }
 
-  /** 1:1 verifikatsiya — xodimning mavjud embeddinglariga qarshi */
+  /**
+   * 1:1 verifikatsiya — xodimning mavjud embeddinglariga qarshi.
+   * Face-service liveness o'tmagan yuzga HECH QACHON match=true qaytarmaydi;
+   * error kodi (FACE_NOT_FOUND/LIVENESS_FAILED) chaqiruvchiga surface qilinadi.
+   */
   async verify(image: Buffer, embeddings: number[][]): Promise<VerifyResult> {
     const res = await this.postJson<{
       match: boolean;
       similarity?: number;
       liveness_score?: number;
       liveness_passed?: boolean;
+      error?: string | null;
     }>('/verify', {
       image_b64: image.toString('base64'),
       embeddings,
@@ -146,6 +199,114 @@ export class FaceService {
       match: res.match,
       confidence: res.similarity ?? 0,
       livenessScore: res.liveness_score ?? 0,
+      livenessPassed: res.liveness_passed ?? false,
+      errorCode: res.error ?? undefined,
+    };
+  }
+
+  /**
+   * Bitta kadrni TEZKOR tahlil qilish (real-time WS oqimi): yuz bor-yo'qligi,
+   * normalized bbox, yaw, EAR. Identifikatsiya QILINMAYDI — bu faqat jonlilik
+   * darvozasi va yuz kvadratini chizish uchun.
+   */
+  async analyze(
+    image: Buffer,
+    opts: { rotation?: number; tryRotations?: boolean; checkLiveness?: boolean } = {},
+  ): Promise<AnalyzeResult> {
+    const res = await this.postJson<{
+      found: boolean;
+      multiple?: boolean;
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+      yaw?: number | null;
+      pitch?: number | null;
+      roll?: number | null;
+      ear?: number | null;
+      det_score?: number;
+      brightness?: number | null;
+      sharpness?: number | null;
+      liveness_score?: number | null;
+      landmarks?: number[][] | null;
+      rotation_applied?: number;
+      frame_width?: number;
+      frame_height?: number;
+      error?: string | null;
+    }>('/analyze', {
+      image_b64: image.toString('base64'),
+      check_liveness: opts.checkLiveness ?? true,
+      rotation: opts.rotation ?? 0,
+      try_rotations: opts.tryRotations ?? false,
+    });
+    return {
+      found: res.found,
+      multiple: res.multiple ?? false,
+      x: res.x ?? 0,
+      y: res.y ?? 0,
+      width: res.width ?? 0,
+      height: res.height ?? 0,
+      yaw: res.yaw ?? null,
+      pitch: res.pitch ?? null,
+      roll: res.roll ?? null,
+      ear: res.ear ?? null,
+      detScore: res.det_score ?? 0,
+      brightness: res.brightness ?? null,
+      sharpness: res.sharpness ?? null,
+      livenessScore: res.liveness_score ?? null,
+      landmarks: res.landmarks ?? null,
+      rotationApplied: res.rotation_applied ?? 0,
+      frameWidth: res.frame_width ?? 0,
+      frameHeight: res.frame_height ?? 0,
+      errorCode: res.error ?? undefined,
+    };
+  }
+
+  /**
+   * Ko'p kadrli (burst) verifikatsiya — haqiqiy jonlilik tekshiruvi:
+   * passiv anti-spoof ansambl + kadrlararo izchillik + bosh burilishi/blink
+   * challenge. Statik rasm/ekran bu zanjirdan o'tolmaydi.
+   */
+  async verifyLive(
+    frames: Buffer[],
+    embeddings: number[][],
+    challenge: 'turn' | 'none' = 'turn',
+    rotation = 0,
+  ): Promise<VerifyLiveResult> {
+    const form = new FormData();
+    frames.forEach((frame, i) => {
+      form.append(
+        'frames',
+        new Blob([new Uint8Array(frame)], { type: 'image/jpeg' }),
+        `frame${i}.jpg`,
+      );
+    });
+    form.append('embeddings', JSON.stringify(embeddings));
+    form.append('challenge', challenge);
+    form.append('rotation', String(rotation));
+    const res = await this.request<{
+      match: boolean;
+      similarity?: number;
+      liveness_score?: number;
+      liveness_passed?: boolean;
+      challenge_passed?: boolean;
+      consistency?: number;
+      frames_total?: number;
+      frames_valid?: number;
+      error?: string | null;
+      reasons?: string[];
+    }>('/verify-live', { method: 'POST', body: form });
+    return {
+      match: res.match,
+      confidence: res.similarity ?? 0,
+      livenessScore: res.liveness_score ?? 0,
+      livenessPassed: res.liveness_passed ?? false,
+      challengePassed: res.challenge_passed ?? false,
+      consistency: res.consistency ?? 0,
+      framesValid: res.frames_valid ?? 0,
+      framesTotal: res.frames_total ?? 0,
+      errorCode: res.error ?? undefined,
+      reasons: res.reasons ?? [],
     };
   }
 

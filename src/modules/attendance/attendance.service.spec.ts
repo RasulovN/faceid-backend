@@ -16,7 +16,7 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
   let workDayRepository: any;
   let embeddingRepository: any;
   let redis: { get: jest.Mock; set: jest.Mock };
-  let faceService: { identify: jest.Mock; verify: jest.Mock };
+  let faceService: { identify: jest.Mock; verify: jest.Mock; verifyLive: jest.Mock };
   let auditService: { log: jest.Mock };
   let wsService: { emitAttendanceNew: jest.Mock };
   let workDayService: { recalc: jest.Mock };
@@ -81,7 +81,23 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
         confidence: 0.92,
         livenessScore: 0.95,
       })),
-      verify: jest.fn(async () => ({ match: true, confidence: 0.9, livenessScore: 0.9 })),
+      verify: jest.fn(async () => ({
+        match: true,
+        confidence: 0.9,
+        livenessScore: 0.9,
+        livenessPassed: true,
+      })),
+      verifyLive: jest.fn(async () => ({
+        match: true,
+        confidence: 0.9,
+        livenessScore: 0.9,
+        livenessPassed: true,
+        challengePassed: true,
+        consistency: 0.95,
+        framesValid: 4,
+        framesTotal: 4,
+        reasons: [],
+      })),
     };
     auditService = { log: jest.fn() };
     wsService = { emitAttendanceNew: jest.fn() };
@@ -160,7 +176,7 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
 
     it('geofence tashqarisida → OUT_OF_GEOFENCE (distance details bilan)', async () => {
       await expect(
-        service.mobileCheck(user, Buffer.from('selfie'), {
+        service.mobileCheck(user, [Buffer.from('selfie')], {
           latitude: 41.326, // ~1.9 km uzoqda
           longitude: 69.228,
           accuracy: 5,
@@ -176,7 +192,7 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
 
     it('mock location → MOCK_LOCATION + suspicious audit yoziladi', async () => {
       await expect(
-        service.mobileCheck(user, Buffer.from('selfie'), {
+        service.mobileCheck(user, [Buffer.from('selfie')], {
           latitude: 41.311081,
           longitude: 69.240562,
           accuracy: 5,
@@ -190,7 +206,7 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
     });
 
     it('geofence ichida + yuz tasdiqlangan → event yaratiladi', async () => {
-      const result = await service.mobileCheck(user, Buffer.from('selfie'), {
+      const result = await service.mobileCheck(user, [Buffer.from('selfie')], {
         latitude: 41.311081,
         longitude: 69.240562,
         accuracy: 5,
@@ -203,10 +219,106 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
       );
     });
 
+    const geo = {
+      latitude: 41.311081,
+      longitude: 69.240562,
+      accuracy: 5,
+      isMockLocation: false,
+      type: AttendanceEventType.CHECK_IN,
+    };
+    const burst = [Buffer.from('f1'), Buffer.from('f2'), Buffer.from('f3'), Buffer.from('f4')];
+
+    it('burst (4 kadr) → verifyLive chaqiriladi va event yaratiladi', async () => {
+      const result = await service.mobileCheck(user, burst, geo);
+      expect(result.ok).toBe(true);
+      expect(faceService.verifyLive).toHaveBeenCalledWith(
+        burst,
+        [[0.1, 0.2]],
+        'turn',
+        0, // HTTP klient kadrlari allaqachon to'g'ri orientatsiyada
+      );
+      expect(faceService.verify).not.toHaveBeenCalled();
+    });
+
+    it('burst: LIVENESS_FAILED → xato + spoofAttempt audit yoziladi', async () => {
+      faceService.verifyLive.mockResolvedValue({
+        match: false,
+        confidence: 0,
+        livenessScore: 0.2,
+        livenessPassed: false,
+        challengePassed: false,
+        consistency: 0.9,
+        framesValid: 4,
+        framesTotal: 4,
+        errorCode: 'LIVENESS_FAILED',
+        reasons: ['PASSIVE_ANTISPOOF_LOW'],
+      });
+      await expect(service.mobileCheck(user, burst, geo)).rejects.toMatchObject({
+        code: 'LIVENESS_FAILED',
+      });
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'attendance.spoofAttempt' }),
+      );
+      expect(eventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('burst: CHALLENGE_FAILED → transient xato, event yozilmaydi', async () => {
+      faceService.verifyLive.mockResolvedValue({
+        match: false,
+        confidence: 0,
+        livenessScore: 0.9,
+        livenessPassed: true,
+        challengePassed: false,
+        consistency: 0.9,
+        framesValid: 4,
+        framesTotal: 4,
+        errorCode: 'CHALLENGE_FAILED',
+        reasons: ['NO_HEAD_TURN'],
+      });
+      await expect(service.mobileCheck(user, burst, geo)).rejects.toMatchObject({
+        code: 'CHALLENGE_FAILED',
+      });
+      expect(eventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('burst: kadrlarda yuz yo‘q → FACE_NOT_DETECTED', async () => {
+      faceService.verifyLive.mockResolvedValue({
+        match: false,
+        confidence: 0,
+        livenessScore: 0,
+        livenessPassed: false,
+        challengePassed: false,
+        consistency: 0,
+        framesValid: 0,
+        framesTotal: 4,
+        errorCode: 'FACE_NOT_FOUND',
+        reasons: ['TOO_FEW_FRAMES_WITH_FACE'],
+      });
+      await expect(service.mobileCheck(user, burst, geo)).rejects.toMatchObject({
+        code: 'FACE_NOT_DETECTED',
+      });
+    });
+
+    it('bitta selfie (eski klient): liveness o‘tmasa LIVENESS_FAILED + audit', async () => {
+      faceService.verify.mockResolvedValue({
+        match: false,
+        confidence: 0.9,
+        livenessScore: 0.2,
+        livenessPassed: false,
+        errorCode: 'LIVENESS_FAILED',
+      });
+      await expect(
+        service.mobileCheck(user, [Buffer.from('selfie')], geo),
+      ).rejects.toMatchObject({ code: 'LIVENESS_FAILED' });
+      expect(auditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'attendance.spoofAttempt' }),
+      );
+    });
+
     it('debounce faol bo‘lsa → DEBOUNCE (429)', async () => {
       redis.get.mockResolvedValue(JSON.stringify({ eventId: 'evt-0' }));
       await expect(
-        service.mobileCheck(user, Buffer.from('selfie'), {
+        service.mobileCheck(user, [Buffer.from('selfie')], {
           latitude: 41.311081,
           longitude: 69.240562,
           accuracy: 5,

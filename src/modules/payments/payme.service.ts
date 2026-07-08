@@ -7,6 +7,8 @@ import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { Tariff } from '../../entities/tariff.entity';
 import { CompanyStatus, PaymeState, SubscriptionStatus } from '../../common/enums';
+import { MailService } from '../mail/mail.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaymeConfig } from './payme.config';
 import { FiscalEntry, PaymentFiscalData } from './payme.types';
 
@@ -39,6 +41,13 @@ export const PaymeErrors = {
 /** Payme bekor qilish sabablari (reason) — biz timeout'da 4 ni qo'yamiz */
 export const PAYME_REASON_TIMEOUT = 4;
 
+/**
+ * Ichki sabab kodi: foydalanuvchi kutilayotgan to'lovni O'ZI bekor qildi.
+ * Payme rasmiy reason'lari 1..10 oralig'ida — to'qnashmasligi uchun 16.
+ * (Bunday to'lovlar Payme'ga hech qachon ulanmagan, tashqariga chiqmaydi.)
+ */
+export const PAYME_REASON_USER_CANCEL = 16;
+
 /** Tranzaksiya yaroqlilik muddati: 12 soat */
 export const PAYME_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 
@@ -63,8 +72,11 @@ export class PaymeService {
   constructor(
     @InjectRepository(Payment) private readonly paymentRepository: Repository<Payment>,
     @InjectRepository(Tariff) private readonly tariffRepository: Repository<Tariff>,
+    @InjectRepository(Company) private readonly companyRepository: Repository<Company>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly paymeConfig: PaymeConfig,
+    private readonly mailService: MailService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /** Basic auth: login 'Paycom', parol joriy rejim kaliti (timing-safe taqqoslash) */
@@ -82,9 +94,58 @@ export class PaymeService {
     return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
-  /** JSON-RPC kirish nuqtasi */
-  async handle(request: PaymeRequest, authorizationHeader: string | undefined): Promise<PaymeResponse> {
+  /**
+   * Payme IP allowlist tekshiruvi. `ip` undefined bo'lsa (ichki chaqiruv,
+   * masalan lokal sandbox) yoki ro'yxat bo'sh bo'lsa — o'tkaziladi.
+   * Yozuvlar: aniq IP yoki IPv4 CIDR (185.234.113.0/27). IPv6-mapped
+   * (::ffff:a.b.c.d) manzillar normalizatsiya qilinadi.
+   */
+  isIpAllowed(ip: string | undefined): boolean {
+    const allowed = this.paymeConfig.allowedIps;
+    if (allowed.length === 0 || ip === undefined) return true;
+    const normalized = ip.replace(/^::ffff:/i, '');
+    for (const entry of allowed) {
+      if (entry === normalized || entry === ip) return true;
+      const cidr = /^(\d+\.\d+\.\d+\.\d+)\/(\d{1,2})$/.exec(entry);
+      if (cidr && this.ipv4InCidr(normalized, cidr[1], Number(cidr[2]))) return true;
+    }
+    return false;
+  }
+
+  private ipv4InCidr(ip: string, network: string, prefix: number): boolean {
+    const toInt = (addr: string): number | null => {
+      const parts = addr.split('.');
+      if (parts.length !== 4) return null;
+      let result = 0;
+      for (const part of parts) {
+        const n = Number(part);
+        if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+        result = result * 256 + n;
+      }
+      return result;
+    };
+    const ipInt = toInt(ip);
+    const netInt = toInt(network);
+    if (ipInt === null || netInt === null || prefix < 0 || prefix > 32) return false;
+    const mask = prefix === 0 ? 0 : (~0 << (32 - prefix)) >>> 0;
+    return ((ipInt & mask) >>> 0) === ((netInt & mask) >>> 0);
+  }
+
+  /** JSON-RPC kirish nuqtasi. `remoteIp` — so'rov IP'si (allowlist uchun, ixtiyoriy) */
+  async handle(
+    request: PaymeRequest,
+    authorizationHeader: string | undefined,
+    remoteIp?: string,
+  ): Promise<PaymeResponse> {
     const id = request?.id ?? null;
+    if (!this.isIpAllowed(remoteIp)) {
+      this.logger.warn(`Payme so'rovi ruxsatsiz IP'dan rad etildi: ${remoteIp}`);
+      return this.error(id, PaymeErrors.INVALID_AUTH, msg(
+        'Avtorizatsiya xatosi',
+        'Ошибка авторизации',
+        'Insufficient privileges',
+      ));
+    }
     if (!this.verifyAuth(authorizationHeader)) {
       return this.error(id, PaymeErrors.INVALID_AUTH, msg(
         'Avtorizatsiya xatosi',
@@ -212,7 +273,8 @@ export class PaymeService {
   }
 
   async performTransaction(params: Record<string, any>): Promise<Record<string, unknown>> {
-    return this.dataSource.transaction(async (manager) => {
+    let performedPayment: Payment | null = null;
+    const response = await this.dataSource.transaction(async (manager) => {
       const payment = await this.findPaymentByTransactionId(params.id, manager, true);
       const repo = manager.getRepository(Payment);
 
@@ -247,6 +309,7 @@ export class PaymeService {
       this.logger.log(
         `Payme to'lov bajarildi: payment=${payment.id}, company=${payment.companyId}, amount=${payment.amount}`,
       );
+      performedPayment = payment;
 
       return {
         transaction: payment.id,
@@ -254,10 +317,14 @@ export class PaymeService {
         state: PaymeState.PERFORMED,
       };
     });
+    // Xabarnomalar tranzaksiya COMMIT bo'lgandan keyin (rollback'da yuborilmasin)
+    if (performedPayment) void this.notifyPaymentResult(performedPayment, 'success');
+    return response;
   }
 
   async cancelTransaction(params: Record<string, any>): Promise<Record<string, unknown>> {
-    return this.dataSource.transaction(async (manager) => {
+    let revokedPayment: Payment | null = null;
+    const response = await this.dataSource.transaction(async (manager) => {
       const payment = await this.findPaymentByTransactionId(params.id, manager, true);
       const repo = manager.getRepository(Payment);
       const reason = Number(params.reason) || 0;
@@ -270,6 +337,7 @@ export class PaymeService {
         this.logger.warn(
           `To'lov bajarilgandan keyin bekor qilindi (obuna qaytarildi): payment=${payment.id}, reason=${reason}`,
         );
+        revokedPayment = payment;
       }
       // Allaqachon bekor bo'lsa — idempotent
       return {
@@ -278,6 +346,8 @@ export class PaymeService {
         state: payment.state,
       };
     });
+    if (revokedPayment) void this.notifyPaymentResult(revokedPayment, 'revoked');
+    return response;
   }
 
   async checkTransaction(params: Record<string, any>): Promise<Record<string, unknown>> {
@@ -306,7 +376,7 @@ export class PaymeService {
         id: p.paymeTransactionId,
         time: p.paymeTime,
         amount: p.amount,
-        account: { payment_id: p.id },
+        account: { [this.paymeConfig.accountField]: p.id },
         create_time: p.paymeTime ?? 0,
         perform_time: p.performTime?.getTime() ?? 0,
         cancel_time: p.cancelTime?.getTime() ?? 0,
@@ -352,10 +422,73 @@ export class PaymeService {
   // ---------- Yordamchilar ----------
 
   /**
-   * Fiskalizatsiya (soliq cheki) ma'lumotlari — CheckPerformTransaction javobidagi `detail`.
+   * To'lov yakuni haqida kompaniyani xabardor qilish: egaga in-app bildirishnoma
+   * (WS real-time) + kontakt emailga xat. Fire-and-forget — xato to'lov oqimini
+   * buzmaydi, faqat logga yoziladi. DB tranzaksiyasi COMMIT bo'lgach chaqiriladi.
+   */
+  private async notifyPaymentResult(
+    payment: Payment,
+    kind: 'success' | 'revoked',
+  ): Promise<void> {
+    try {
+      const [company, tariff] = await Promise.all([
+        this.companyRepository.findOne({ where: { id: payment.companyId } }),
+        payment.tariffId
+          ? this.tariffRepository.findOne({ where: { id: payment.tariffId } })
+          : Promise.resolve(null),
+      ]);
+      if (!company) return;
+      const tariffName = tariff?.name ?? 'Obuna';
+
+      if (kind === 'success') {
+        if (company.ownerId) {
+          await this.notificationsService.create(
+            company.ownerId,
+            'PAYMENT_SUCCESS',
+            "To'lov qabul qilindi",
+            `"${tariffName}" tarifi ${payment.months} oyga faollashtirildi.`,
+            { paymentId: payment.id, amount: payment.amount },
+          );
+        }
+        if (company.contactEmail) {
+          await this.mailService.sendPaymentSuccess(
+            company.contactEmail,
+            company.name,
+            payment.amount,
+            tariffName,
+            payment.months,
+          );
+        }
+      } else {
+        if (company.ownerId) {
+          await this.notificationsService.create(
+            company.ownerId,
+            'PAYMENT_REVOKED',
+            "To'lov qaytarildi",
+            `"${tariffName}" tarifi to'lovi Payme tomonidan bekor qilindi — obuna muddati qisqartirildi.`,
+            { paymentId: payment.id, amount: payment.amount, reason: payment.reason },
+          );
+        }
+        if (company.contactEmail) {
+          await this.mailService.sendPaymentRevoked(
+            company.contactEmail,
+            company.name,
+            payment.amount,
+            tariffName,
+          );
+        }
+      }
+    } catch (err) {
+      this.logger.error(`To'lov xabarnomasi yuborilmadi: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Fiskalizatsiya (soliq cheki) ma'lumotlari — CheckPerformTransaction javobidagi
+   * `detail` va Subscribe API receipts.create'dagi `detail` uchun umumiy.
    * MXIK sozlanmagan bo'lsa yuborilmaydi (kassa fiskalizatsiyasiz rejimda).
    */
-  private async buildFiscalDetail(
+  async buildFiscalDetail(
     payment: Payment,
   ): Promise<Record<string, unknown> | undefined> {
     const fiscal = this.paymeConfig.fiscal;
@@ -387,13 +520,15 @@ export class PaymeService {
     manager?: EntityManager,
     lock = false,
   ): Promise<Payment> {
-    const paymentId = account?.payment_id;
+    const field = this.paymeConfig.accountField;
+    // Asosiy — kabinetda sozlangan maydon; eski payment_id bilan ham moslik
+    const paymentId = account?.[field] ?? account?.payment_id;
     if (!paymentId || typeof paymentId !== 'string' || !this.isUuid(paymentId)) {
       throw new PaymeError(PaymeErrors.PAYMENT_NOT_FOUND, msg(
-        'payment_id ko‘rsatilmagan yoki noto‘g‘ri',
-        'Не указан или неверный payment_id',
-        'payment_id is missing or invalid',
-      ), 'payment_id');
+        `${field} ko‘rsatilmagan yoki noto‘g‘ri`,
+        `Не указан или неверный ${field}`,
+        `${field} is missing or invalid`,
+      ), field);
     }
     const repo = manager ? manager.getRepository(Payment) : this.paymentRepository;
     const payment = await repo

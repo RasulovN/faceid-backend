@@ -15,6 +15,7 @@ import { ErrorCodes } from '../../common/constants/error-codes';
 import {
   AttendanceEventType,
   AttendanceSource,
+  CompanyStatus,
   DeviceDirection,
   EmployeeStatus,
   WorkDayStatus,
@@ -133,7 +134,7 @@ export class AttendanceService {
 
   async mobileCheck(
     user: RequestUser,
-    selfie: Buffer,
+    frames: Buffer[],
     fields: {
       latitude: number;
       longitude: number;
@@ -142,14 +143,42 @@ export class AttendanceService {
       type: AttendanceEventType;
     },
   ) {
+    const { employee, embeddings } = await this.prepareMobileSession(user.id, fields);
+    const verify = await this.verifyFrames({ id: user.id }, employee, frames, embeddings);
+    return this.finalizeMobileEvent(employee, frames[0], fields, verify);
+  }
+
+  /**
+   * Mobil davomat sessiyasining KIRISH tekshiruvlari (HTTP ham, WS ham):
+   * xodim profili → subscription → filial koordinatalari → geofence →
+   * mock location (audit bilan) → enrolled embeddinglar mavjudligi.
+   */
+  async prepareMobileSession(
+    userId: string,
+    fields: { latitude: number; longitude: number; isMockLocation: boolean },
+  ): Promise<{ employee: Employee; embeddings: FaceEmbedding[] }> {
     const employee = await this.employeeRepository.findOne({
-      where: { userId: user.id, deletedAt: IsNull() },
+      where: { userId, deletedAt: IsNull() },
       relations: { branch: true },
     });
     if (!employee) throw AppException.notFound('Xodim profili topilmadi');
     if (employee.status === EmployeeStatus.FIRED) {
       throw AppException.forbidden('Hisobingiz faol emas');
     }
+
+    // Obuna: WS oqimida HTTP SubscriptionGuard ishlamaydi — shu yerda tekshiramiz.
+    const company = await this.companyRepository.findOne({ where: { id: employee.companyId } });
+    if (
+      company &&
+      (company.status === CompanyStatus.SUSPENDED || company.status === CompanyStatus.EXPIRED)
+    ) {
+      throw new AppException(
+        ErrorCodes.SUBSCRIPTION_EXPIRED,
+        'Obunangiz muddati tugagan yoki to‘xtatilgan. To‘lovni amalga oshiring.',
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+
     const branch = employee.branch;
     if (!branch || branch.latitude == null || branch.longitude == null) {
       throw AppException.validation('Filial koordinatalari sozlanmagan — administratorga murojaat qiling');
@@ -174,7 +203,7 @@ export class AttendanceService {
     // 2) Mock location
     if (fields.isMockLocation) {
       await this.auditService.log({
-        userId: user.id,
+        userId,
         companyId: employee.companyId,
         action: 'attendance.mockLocationAttempt',
         entityType: 'attendance',
@@ -192,7 +221,7 @@ export class AttendanceService {
       );
     }
 
-    // 3) Yuz verifikatsiyasi (1:1) + liveness
+    // 3) Enrolled embeddinglar
     const embeddings = await this.embeddingRepository.find({
       where: { employeeId: employee.id },
     });
@@ -203,27 +232,43 @@ export class AttendanceService {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
-    const verify = await this.faceService.verify(
-      selfie,
-      embeddings.map((e) => e.embedding),
-    );
-    if (!verify.match) {
-      throw new AppException(
-        ErrorCodes.FACE_NOT_RECOGNIZED,
-        'Yuz tasdiqlanmadi. Yorug‘roq joyda qayta urinib ko‘ring.',
-        HttpStatus.NOT_FOUND,
-      );
-    }
-    const livenessThreshold = Number(this.config.get('LIVENESS_THRESHOLD') ?? 0.7);
-    if (verify.livenessScore < livenessThreshold) {
-      throw new AppException(
-        ErrorCodes.LIVENESS_FAILED,
-        'Jonlilik tekshiruvi muvaffaqiyatsiz. Kameraga to‘g‘ridan qarab qayta urinib ko‘ring.',
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
-    }
+    return { employee, embeddings };
+  }
 
-    // 4) Debounce
+  /** Debounce holatini tashqi (WS) oqim uchun ochiq tekshirish. */
+  async isDebounced(employeeId: string): Promise<boolean> {
+    return (await this.getDebounce(employeeId)) !== null;
+  }
+
+  /**
+   * WS oqimi uchun: darvozadan o'tgan kadrlarni tekshirib eventni yakunlaydi.
+   * Muvaffaqiyatsizlik AppException (aniq kod) bilan otiladi.
+   */
+  async verifyAndFinalize(
+    actorUserId: string,
+    employee: Employee,
+    frames: Buffer[],
+    embeddings: FaceEmbedding[],
+    fields: { latitude: number; longitude: number; type: AttendanceEventType },
+    rotation = 0,
+  ) {
+    const verify = await this.verifyFrames(
+      { id: actorUserId },
+      employee,
+      frames,
+      embeddings,
+      rotation,
+    );
+    return this.finalizeMobileEvent(employee, frames[0], fields, verify);
+  }
+
+  /** Verifikatsiyadan O'TGAN mobil urinishni eventga aylantiradi (debounce bilan). */
+  private async finalizeMobileEvent(
+    employee: Employee,
+    snapshot: Buffer,
+    fields: { latitude: number; longitude: number; type: AttendanceEventType },
+    verify: { confidence: number; livenessScore: number },
+  ) {
     if (await this.getDebounce(employee.id)) {
       throw new AppException(
         ErrorCodes.DEBOUNCE,
@@ -233,7 +278,7 @@ export class AttendanceService {
     }
 
     const timezone = await this.companyTimezone(employee.companyId);
-    const snapshotUrl = await this.uploadSnapshot(employee.companyId, selfie);
+    const snapshotUrl = await this.uploadSnapshot(employee.companyId, snapshot);
     const event = await this.saveEventAndRecalc({
       employee,
       branchId: employee.branchId,
@@ -250,6 +295,109 @@ export class AttendanceService {
     });
 
     return { ok: true, event };
+  }
+
+  /**
+   * Kadr(lar)ni face-service orqali tekshiradi; muvaffaqiyatsizlik aniq xato
+   * kodiga aylanadi. Spoof urinishi (LIVENESS_FAILED) xavfsizlik hodisasi
+   * sifatida audit-log qilinadi.
+   *
+   * - `FACE_NOT_DETECTED` — kadrda yuz ko'rinmadi (transient, klient qayta uradi)
+   * - `CHALLENGE_FAILED` — bosh burilishi/blink kuzatilmadi (transient)
+   * - `LIVENESS_FAILED` — rasm/ekran gumoni (audit-log bilan)
+   * - `FACE_NOT_RECOGNIZED` — jonli yuz, lekin xodimga mos emas
+   */
+  private async verifyFrames(
+    user: { id: string },
+    employee: Employee,
+    frames: Buffer[],
+    embeddings: FaceEmbedding[],
+    rotation = 0,
+  ): Promise<{ confidence: number; livenessScore: number }> {
+    const enrolled = embeddings.map((e) => e.embedding);
+
+    if (frames.length >= 2) {
+      const challenge =
+        this.config.get<string>('FACE_CHALLENGE') === 'none' ? ('none' as const) : ('turn' as const);
+      const res = await this.faceService.verifyLive(frames, enrolled, challenge, rotation);
+      if (res.match) {
+        return { confidence: res.confidence, livenessScore: res.livenessScore };
+      }
+      switch (res.errorCode) {
+        case 'FACE_NOT_FOUND':
+          throw new AppException(
+            ErrorCodes.FACE_NOT_DETECTED,
+            'Kadrda yuz aniqlanmadi. Yuzingizni oval ichiga joylashtiring.',
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        case 'CHALLENGE_FAILED':
+          throw new AppException(
+            ErrorCodes.CHALLENGE_FAILED,
+            'Boshingizni sekin chapga va o‘ngga burib qayta urinib ko‘ring.',
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        case 'LIVENESS_FAILED':
+          await this.logSpoofAttempt(user, employee, {
+            livenessScore: res.livenessScore,
+            consistency: res.consistency,
+            reasons: res.reasons,
+            framesValid: res.framesValid,
+          });
+          throw new AppException(
+            ErrorCodes.LIVENESS_FAILED,
+            'Jonlilik tekshiruvi muvaffaqiyatsiz. Iltimos, kameraga jonli qarang — rasm yoki ekran qabul qilinmaydi.',
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
+        default:
+          throw new AppException(
+            ErrorCodes.FACE_NOT_RECOGNIZED,
+            'Yuz tasdiqlanmadi. Yorug‘roq joyda qayta urinib ko‘ring.',
+            HttpStatus.NOT_FOUND,
+          );
+      }
+    }
+
+    // Orqaga moslik: eski klient bitta selfie yuboradi — faqat passiv liveness.
+    const verify = await this.faceService.verify(frames[0], enrolled);
+    if (verify.match) {
+      return { confidence: verify.confidence, livenessScore: verify.livenessScore };
+    }
+    if (verify.errorCode === 'FACE_NOT_FOUND') {
+      throw new AppException(
+        ErrorCodes.FACE_NOT_DETECTED,
+        'Kadrda yuz aniqlanmadi. Yuzingizni oval ichiga joylashtiring.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (verify.errorCode === 'LIVENESS_FAILED') {
+      await this.logSpoofAttempt(user, employee, { livenessScore: verify.livenessScore });
+      throw new AppException(
+        ErrorCodes.LIVENESS_FAILED,
+        'Jonlilik tekshiruvi muvaffaqiyatsiz. Iltimos, kameraga jonli qarang — rasm yoki ekran qabul qilinmaydi.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    throw new AppException(
+      ErrorCodes.FACE_NOT_RECOGNIZED,
+      'Yuz tasdiqlanmadi. Yorug‘roq joyda qayta urinib ko‘ring.',
+      HttpStatus.NOT_FOUND,
+    );
+  }
+
+  /** Spoof (rasm/ekran) urinishini xavfsizlik hodisasi sifatida qayd etadi. */
+  private async logSpoofAttempt(
+    user: { id: string },
+    employee: Employee,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    await this.auditService.log({
+      userId: user.id,
+      companyId: employee.companyId,
+      action: 'attendance.spoofAttempt',
+      entityType: 'attendance',
+      entityId: employee.id,
+      newValue: { ...details, suspicious: true },
+    });
   }
 
   // ================= PANEL =================

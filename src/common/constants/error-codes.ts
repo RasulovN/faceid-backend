@@ -7,10 +7,14 @@ export const ErrorCodes = {
   NOT_FOUND: 'NOT_FOUND',
   CONFLICT: 'CONFLICT',
   FACE_NOT_FOUND: 'FACE_NOT_FOUND',
+  /** Yuborilgan kadr(lar)da yuz aniqlanmadi — transient, qayta urinish mumkin */
+  FACE_NOT_DETECTED: 'FACE_NOT_DETECTED',
   FACE_MULTIPLE: 'FACE_MULTIPLE',
   FACE_LOW_QUALITY: 'FACE_LOW_QUALITY',
   FACE_NOT_RECOGNIZED: 'FACE_NOT_RECOGNIZED',
   LIVENESS_FAILED: 'LIVENESS_FAILED',
+  /** Aktiv liveness challenge (bosh burilishi/blink) bajarilmadi — transient */
+  CHALLENGE_FAILED: 'CHALLENGE_FAILED',
   OUT_OF_GEOFENCE: 'OUT_OF_GEOFENCE',
   MOCK_LOCATION: 'MOCK_LOCATION',
   DEBOUNCE: 'DEBOUNCE',

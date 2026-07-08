@@ -66,14 +66,29 @@ describe('PaymeService (state machine)', () => {
       merchantId: 'merchant-1',
       merchantKey: MERCHANT_KEY,
       checkoutUrl: 'https://checkout.test.paycom.uz',
+      accountField: 'payment_id',
+      allowedIps: [] as string[],
       fiscal: FISCAL,
       isConfigured: true,
     };
+    const companyRepository = {
+      findOne: jest.fn(async () => ({
+        id: 'c1',
+        name: 'Demo LLC',
+        ownerId: null,
+        contactEmail: null,
+      })),
+    };
+    const mailService = { sendPaymentSuccess: jest.fn(), sendPaymentRevoked: jest.fn() };
+    const notificationsService = { create: jest.fn() };
     service = new PaymeService(
       paymentRepository as any,
       tariffRepository as any,
+      companyRepository as any,
       dataSource as any,
       paymeConfig as any,
+      mailService as any,
+      notificationsService as any,
     );
   });
 
@@ -409,5 +424,54 @@ describe('PaymeService (state machine)', () => {
       amount: 49_900_000,
       account: { payment_id: PAY_ID },
     });
+  });
+
+  // ---------- Account maydoni (PAYME_ACCOUNT_FIELD) ----------
+
+  it('account maydoni sozlanadigan: order_id bilan CheckPerform o‘tadi', async () => {
+    (service as any).paymeConfig.accountField = 'order_id';
+    paymentRepository.findOne.mockResolvedValue(makePayment());
+    const response = await rpc('CheckPerformTransaction', {
+      amount: 49_900_000,
+      account: { order_id: PAY_ID },
+    });
+    expect(response.result?.allow).toBe(true);
+  });
+
+  it('account maydoni order_id bo‘lsa ham eski payment_id fallback ishlaydi', async () => {
+    (service as any).paymeConfig.accountField = 'order_id';
+    paymentRepository.findOne.mockResolvedValue(makePayment());
+    const response = await rpc('CheckPerformTransaction', {
+      amount: 49_900_000,
+      account: { payment_id: PAY_ID },
+    });
+    expect(response.result?.allow).toBe(true);
+  });
+
+  // ---------- IP allowlist ----------
+
+  it('IP allowlist: CIDR, aniq IP, IPv6-mapped va ichki chaqiruv', () => {
+    (service as any).paymeConfig.allowedIps = ['185.234.113.0/27', '10.0.0.5'];
+    expect(service.isIpAllowed('185.234.113.30')).toBe(true);
+    expect(service.isIpAllowed('::ffff:185.234.113.5')).toBe(true);
+    expect(service.isIpAllowed('10.0.0.5')).toBe(true);
+    expect(service.isIpAllowed('185.234.114.1')).toBe(false);
+    expect(service.isIpAllowed('8.8.8.8')).toBe(false);
+    // ip undefined — ichki chaqiruv (sandbox) — o'tkaziladi
+    expect(service.isIpAllowed(undefined)).toBe(true);
+  });
+
+  it('IP allowlist: ro‘yxat bo‘sh bo‘lsa hamma IP o‘tadi', () => {
+    expect(service.isIpAllowed('8.8.8.8')).toBe(true);
+  });
+
+  it('IP allowlist: ruxsatsiz IP’dan so‘rov → -32504', async () => {
+    (service as any).paymeConfig.allowedIps = ['185.234.113.0/27'];
+    const response = await service.handle(
+      { id: 1, method: 'CheckTransaction', params: {} },
+      AUTH_OK,
+      '1.2.3.4',
+    );
+    expect(response.error?.code).toBe(PaymeErrors.INVALID_AUTH);
   });
 });
