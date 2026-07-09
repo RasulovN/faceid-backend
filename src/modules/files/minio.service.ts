@@ -16,7 +16,9 @@ export class MinioService implements OnModuleInit {
   constructor(private readonly config: ConfigService) {
     this.endpoint = this.config.getOrThrow<string>('MINIO_ENDPOINT');
     this.port = Number(this.config.getOrThrow('MINIO_PORT'));
-    this.useSSL = this.config.get<string>('MINIO_USE_SSL') === 'true';
+    // Joi validatsiyasi qiymatni boolean'ga aylantiradi — string bilan solishtirish
+    // production'da (true) doim false bergani uchun String() orqali normallashtiriladi
+    this.useSSL = String(this.config.get('MINIO_USE_SSL')) === 'true';
     this.employeesBucket = this.config.getOrThrow<string>('MINIO_BUCKET_EMPLOYEES');
     this.snapshotsBucket = this.config.getOrThrow<string>('MINIO_BUCKET_SNAPSHOTS');
     this.client = new Minio.Client({
