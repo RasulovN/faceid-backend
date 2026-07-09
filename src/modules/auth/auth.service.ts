@@ -18,6 +18,7 @@ import { slugify, slugWithSuffix } from '../../common/utils/slug.util';
 import { MailService } from '../mail/mail.service';
 import { RolesService } from '../roles/roles.service';
 import { RulesService } from '../rules/rules.service';
+import { UsageTrackerService } from '../usage/usage-tracker.service';
 import {
   ChangePasswordDto,
   ForgotPasswordDto,
@@ -52,6 +53,7 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly rolesService: RolesService,
     private readonly rulesService: RulesService,
+    private readonly usageTracker: UsageTrackerService,
   ) {}
 
   // ---------- Identifier aniqlash ----------
@@ -174,6 +176,10 @@ export class AuthService {
     user.lastLoginAt = new Date();
     const tokens = await this.issueTokens(user);
     await this.userRepository.save(user);
+    // Login public endpoint (interceptor'da user yo'q) — usage shu yerda qayd etiladi
+    if (user.companyId && user.role !== UserRole.SUPERADMIN) {
+      this.usageTracker.track(user.companyId, user.id, { logins: 1, requests: 1 });
+    }
     return { ...tokens, user: await this.toPublicUser(user) };
   }
 

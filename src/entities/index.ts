@@ -21,6 +21,7 @@ export { Notification } from './notification.entity';
 export { SiteSetting } from './site-setting.entity';
 export { SiteVisit } from './site-visit.entity';
 export { StorageSnapshot } from './storage-snapshot.entity';
+export { UsageDaily } from './usage-daily.entity';
 
 import { AttendanceEvent } from './attendance-event.entity';
 import { AuditLog } from './audit-log.entity';
@@ -42,6 +43,7 @@ import { SiteSetting } from './site-setting.entity';
 import { SiteVisit } from './site-visit.entity';
 import { StorageSnapshot } from './storage-snapshot.entity';
 import { Tariff } from './tariff.entity';
+import { UsageDaily } from './usage-daily.entity';
 import { User } from './user.entity';
 import { WorkDay } from './work-day.entity';
 import { WorkSchedule } from './work-schedule.entity';
@@ -72,4 +74,5 @@ export const ALL_ENTITIES = [
   SiteSetting,
   SiteVisit,
   StorageSnapshot,
+  UsageDaily,
 ];

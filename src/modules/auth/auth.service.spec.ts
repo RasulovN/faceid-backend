@@ -52,6 +52,7 @@ describe('AuthService', () => {
       { sendVerificationEmail: jest.fn(), sendPasswordResetEmail: jest.fn() } as any, // mailService
       { seedDefaultRoles: jest.fn() } as any, // rolesService
       { seedDefaultRules: jest.fn() } as any, // rulesService
+      { track: jest.fn() } as any, // usageTracker
     );
   });
 

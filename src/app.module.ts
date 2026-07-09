@@ -39,6 +39,7 @@ import { StatsModule } from './modules/stats/stats.module';
 import { StorageAnalyticsModule } from './modules/storage-analytics/storage-analytics.module';
 import { LeadsModule } from './modules/leads/leads.module';
 import { TariffsModule } from './modules/tariffs/tariffs.module';
+import { UsageModule } from './modules/usage/usage.module';
 import { UsersModule } from './modules/users/users.module';
 import { WorkDaysModule } from './modules/workdays/workdays.module';
 import { WsModule } from './modules/ws/ws.module';
@@ -105,6 +106,7 @@ import { WsModule } from './modules/ws/ws.module';
     SettingsModule,
     StorageAnalyticsModule,
     SiteAnalyticsModule,
+    UsageModule,
     LeadsModule,
   ],
   providers: [
