@@ -6,6 +6,7 @@ import {
   HttpCode,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -32,6 +33,7 @@ import { PaymeSubscribeService } from './payme-subscribe.service';
 import { PaymentReceiptService } from './payment-receipt.service';
 import {
   AdminPaymentStateFilter,
+  AdminSubscriptionAction,
   AdminSubscriptionFilter,
   SubscriptionsService,
 } from './subscriptions.service';
@@ -142,6 +144,28 @@ class AdminSubscriptionsQueryDto extends PaginationDto {
   @IsOptional()
   @IsIn(['active', 'expiring', 'expired'])
   status?: Exclude<AdminSubscriptionFilter, undefined>;
+}
+
+class AdminSubscriptionActionDto {
+  @ApiProperty({ enum: ['extend', 'cancel'] })
+  @IsIn(['extend', 'cancel'])
+  action: AdminSubscriptionAction;
+
+  @ApiPropertyOptional({ description: 'extend: necha oyga uzaytirish (kalendar oy)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(36)
+  months?: number;
+
+  @ApiPropertyOptional({ description: 'extend: necha kunga uzaytirish (months bilan qoʼshilishi mumkin)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1096)
+  days?: number;
 }
 
 @ApiTags('payments')
@@ -330,5 +354,22 @@ export class PaymentsController {
   @ApiOperation({ summary: 'Barcha obunalar (?status=active|expiring|expired)' })
   async adminSubscriptions(@Query() query: AdminSubscriptionsQueryDto) {
     return this.subscriptionsService.adminSubscriptions(query, query.status);
+  }
+
+  @Patch('admin/subscriptions/:id')
+  @ApiBearerAuth()
+  @Roles(UserRole.SUPERADMIN)
+  @ApiOperation({
+    summary:
+      "Obuna amali: extend (muddat ustiga qo'shish / qayta faollashtirish) yoki cancel (darhol bekor qilish)",
+  })
+  async adminManageSubscription(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AdminSubscriptionActionDto,
+  ) {
+    return this.subscriptionsService.adminManage(id, dto.action, {
+      months: dto.months,
+      days: dto.days,
+    });
   }
 }

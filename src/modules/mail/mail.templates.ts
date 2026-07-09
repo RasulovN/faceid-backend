@@ -131,6 +131,41 @@ export function paymentRevokedTemplate(
   );
 }
 
+export function subscriptionExtendedTemplate(
+  companyName: string,
+  tariffName: string,
+  endsAt: string,
+  panelUrl: string,
+): string {
+  return layout(
+    'Obunangiz uzaytirildi 🎉',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Obunangiz administrator tomonidan uzaytirildi:</p>
+     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;width:100%;">
+       <tr><td style="padding:16px 20px;">
+         <div style="font-size:13px;color:#6b7280;">Tarif</div>
+         <div style="font-size:16px;color:#111827;font-weight:600;margin-bottom:12px;">${tariffName}</div>
+         <div style="font-size:13px;color:#6b7280;">Yangi tugash sanasi</div>
+         <div style="font-size:20px;color:#059669;font-weight:700;">${endsAt}</div>
+       </td></tr>
+     </table>
+     ${button(panelUrl, 'Obunani ko‘rish')}`,
+  );
+}
+
+export function subscriptionCancelledTemplate(
+  companyName: string,
+  tariffName: string,
+  payUrl: string,
+): string {
+  return layout(
+    'Obuna bekor qilindi',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;"><b>${tariffName}</b> tarifi bo‘yicha obunangiz administrator tomonidan bekor qilindi. Tizimdan foydalanishni davom ettirish uchun yangi obuna rasmiylashtirishingiz mumkin:</p>
+     ${button(payUrl, 'Obuna rasmiylashtirish')}`,
+  );
+}
+
 export function leadApprovedTemplate(name: string, registerUrl: string): string {
   return layout(
     'Murojaatingiz tasdiqlandi 🎉',

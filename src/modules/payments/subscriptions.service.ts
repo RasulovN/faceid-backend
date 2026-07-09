@@ -1,20 +1,36 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, IsNull, Repository } from 'typeorm';
+import { In, IsNull, MoreThan, Repository } from 'typeorm';
 import { Company } from '../../entities/company.entity';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { Tariff } from '../../entities/tariff.entity';
 import { AppException } from '../../common/exceptions/app.exception';
-import { PaymeState, SubscriptionStatus } from '../../common/enums';
+import { CompanyStatus, PaymeState, SubscriptionStatus } from '../../common/enums';
 import { Paginated, PaginationDto } from '../../common/dto/pagination.dto';
+import { MailService } from '../mail/mail.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { computeMonthlyPrice, CustomLimits } from '../tariffs/pricing';
 import { TariffLimitsService } from '../tariffs/tariff-limits.service';
 import { PAYME_REASON_TIMEOUT, PAYME_REASON_USER_CANCEL } from './payme.service';
 import { PaymeConfig } from './payme.config';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Kalendar oy qo'shish (payme.service.activateSubscription bilan bir xil semantika) */
+function addMonths(date: Date, months: number): Date {
+  const result = new Date(date);
+  result.setMonth(result.getMonth() + months);
+  return result;
+}
+
+export type AdminSubscriptionAction = 'extend' | 'cancel';
+
+export interface AdminSubscriptionActionOptions {
+  months?: number;
+  days?: number;
+}
 
 export type AdminSubscriptionFilter = 'active' | 'expiring' | 'expired' | undefined;
 
@@ -67,6 +83,8 @@ function resolveEffectiveLimits(tariff: Tariff, company: Company): CustomLimits 
 
 @Injectable()
 export class SubscriptionsService {
+  private readonly logger = new Logger(SubscriptionsService.name);
+
   constructor(
     @InjectRepository(Subscription)
     private readonly subscriptionRepository: Repository<Subscription>,
@@ -76,6 +94,8 @@ export class SubscriptionsService {
     private readonly tariffLimits: TariffLimitsService,
     private readonly config: ConfigService,
     private readonly paymeConfig: PaymeConfig,
+    private readonly mailService: MailService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async current(companyId: string) {
@@ -450,7 +470,9 @@ export class SubscriptionsService {
     const companies = companyIds.length
       ? await this.companyRepository.find({ where: { id: In(companyIds) } })
       : [];
-    const companyMap = new Map(companies.map((c) => [c.id, { id: c.id, name: c.name }]));
+    const companyMap = new Map(
+      companies.map((c) => [c.id, { id: c.id, name: c.name, status: c.status }]),
+    );
 
     return Paginated.of(
       items.map((s) => ({
@@ -466,5 +488,165 @@ export class SubscriptionsService {
       total,
       query,
     );
+  }
+
+  /**
+   * Superadmin obuna amali:
+   * - extend: faol obunada muddat MAVJUD tugash sanasi USTIGA qo'shiladi; tugagan/bekor
+   *   qilingan obunada bugundan qayta boshlanadi. Har ikkala holatda obuna va kompaniya
+   *   ACTIVE ga qaytadi (uzaytirish = qayta faollashtirish).
+   * - cancel: darhol kuchga kiradi — obuna CANCELLED, kompaniya qolgan eng so'nggi faol
+   *   obunaga sinxronlanadi, bo'lmasa EXPIRED (payme rollbackSubscription bilan bir xil naqsh).
+   * Egaga in-app bildirishnoma + contactEmail'ga brendli email yuboriladi (xato yutiladi).
+   */
+  async adminManage(
+    id: string,
+    action: AdminSubscriptionAction,
+    opts: AdminSubscriptionActionOptions = {},
+  ) {
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id },
+      relations: { tariff: true },
+    });
+    if (!subscription) throw AppException.notFound('Obuna topilmadi');
+    const company = await this.companyRepository.findOne({
+      where: { id: subscription.companyId },
+    });
+    if (!company) throw AppException.notFound('Kompaniya topilmadi');
+
+    const now = new Date();
+
+    if (action === 'extend') {
+      const months = opts.months ?? 0;
+      const days = opts.days ?? 0;
+      if (months <= 0 && days <= 0) {
+        throw AppException.validation("Muddat kiritilmadi: 'months' yoki 'days' bering");
+      }
+      const base =
+        subscription.status === SubscriptionStatus.ACTIVE && subscription.endsAt > now
+          ? subscription.endsAt
+          : now;
+      let endsAt = months > 0 ? addMonths(base, months) : new Date(base);
+      if (days > 0) endsAt = new Date(endsAt.getTime() + days * DAY_MS);
+
+      subscription.endsAt = endsAt;
+      subscription.status = SubscriptionStatus.ACTIVE;
+      await this.subscriptionRepository.save(subscription);
+
+      await this.companyRepository.update(
+        { id: company.id },
+        {
+          status: CompanyStatus.ACTIVE,
+          tariffId: subscription.tariffId,
+          subscriptionStartsAt: subscription.startsAt,
+          subscriptionEndsAt: subscription.endsAt,
+        },
+      );
+
+      await this.notifySubscriptionAction(company, subscription, 'extended');
+      return this.toAdminRow(subscription, company, CompanyStatus.ACTIVE);
+    }
+
+    // cancel
+    if (subscription.status === SubscriptionStatus.CANCELLED) {
+      throw AppException.validation('Obuna allaqachon bekor qilingan');
+    }
+    subscription.status = SubscriptionStatus.CANCELLED;
+    await this.subscriptionRepository.save(subscription);
+
+    // Kompaniyani qolgan eng so'nggi faol obunaga sinxronlash
+    const latestActive = await this.subscriptionRepository.findOne({
+      where: {
+        companyId: company.id,
+        status: SubscriptionStatus.ACTIVE,
+        endsAt: MoreThan(now),
+      },
+      order: { endsAt: 'DESC' },
+    });
+    let companyStatus: CompanyStatus;
+    if (latestActive) {
+      companyStatus = CompanyStatus.ACTIVE;
+      await this.companyRepository.update(
+        { id: company.id },
+        {
+          status: CompanyStatus.ACTIVE,
+          tariffId: latestActive.tariffId,
+          subscriptionStartsAt: latestActive.startsAt,
+          subscriptionEndsAt: latestActive.endsAt,
+        },
+      );
+    } else {
+      companyStatus = CompanyStatus.EXPIRED;
+      await this.companyRepository.update(
+        { id: company.id },
+        { status: CompanyStatus.EXPIRED, subscriptionEndsAt: now },
+      );
+    }
+
+    await this.notifySubscriptionAction(company, subscription, 'cancelled');
+    return this.toAdminRow(subscription, company, companyStatus);
+  }
+
+  /** adminSubscriptions ro'yxati bilan bir xil qator shakli */
+  private toAdminRow(subscription: Subscription, company: Company, companyStatus: CompanyStatus) {
+    return {
+      id: subscription.id,
+      company: { id: company.id, name: company.name, status: companyStatus },
+      tariff: subscription.tariff ?? null,
+      startsAt: subscription.startsAt,
+      endsAt: subscription.endsAt,
+      status: subscription.status,
+      isTrial: subscription.isTrial,
+      daysLeft: Math.max(0, Math.ceil((subscription.endsAt.getTime() - Date.now()) / DAY_MS)),
+    };
+  }
+
+  /** Egaga in-app + email xabarnoma — statistik yo'l, asosiy amalni hech qachon buzmaydi */
+  private async notifySubscriptionAction(
+    company: Company,
+    subscription: Subscription,
+    kind: 'extended' | 'cancelled',
+  ): Promise<void> {
+    try {
+      const tariffName = subscription.tariff?.name ?? 'Obuna';
+      if (kind === 'extended') {
+        if (company.ownerId) {
+          await this.notificationsService.create(
+            company.ownerId,
+            'SUBSCRIPTION_EXTENDED',
+            'Obuna uzaytirildi',
+            `"${tariffName}" tarifi bo'yicha obunangiz ${subscription.endsAt.toISOString().slice(0, 10)} gacha uzaytirildi.`,
+            { subscriptionId: subscription.id },
+          );
+        }
+        if (company.contactEmail) {
+          await this.mailService.sendSubscriptionExtended(
+            company.contactEmail,
+            company.name,
+            tariffName,
+            subscription.endsAt,
+          );
+        }
+      } else {
+        if (company.ownerId) {
+          await this.notificationsService.create(
+            company.ownerId,
+            'SUBSCRIPTION_CANCELLED',
+            'Obuna bekor qilindi',
+            `"${tariffName}" tarifi bo'yicha obunangiz administrator tomonidan bekor qilindi.`,
+            { subscriptionId: subscription.id },
+          );
+        }
+        if (company.contactEmail) {
+          await this.mailService.sendSubscriptionCancelled(
+            company.contactEmail,
+            company.name,
+            tariffName,
+          );
+        }
+      }
+    } catch (err) {
+      this.logger.error(`Obuna xabarnomasi yuborilmadi: ${(err as Error).message}`);
+    }
   }
 }

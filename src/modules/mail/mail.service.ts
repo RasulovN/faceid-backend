@@ -8,7 +8,9 @@ import {
   passwordResetTemplate,
   paymentRevokedTemplate,
   paymentSuccessTemplate,
+  subscriptionCancelledTemplate,
   subscriptionExpiringTemplate,
+  subscriptionExtendedTemplate,
   verificationEmailTemplate,
 } from './mail.templates';
 
@@ -133,6 +135,40 @@ export class MailService {
       to,
       `FaceID — To'lov qaytarildi (${formatSom(amountTiyin)})`,
       paymentRevokedTemplate(companyName, formatSom(amountTiyin), tariffName, payUrl),
+    );
+  }
+
+  /** Admin obunani qo'lda uzaytirganda */
+  async sendSubscriptionExtended(
+    to: string,
+    companyName: string,
+    tariffName: string,
+    endsAt: Date,
+  ): Promise<void> {
+    const panelUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/app/subscription`;
+    await this.send(
+      to,
+      'FaceID — Obunangiz uzaytirildi',
+      subscriptionExtendedTemplate(
+        companyName,
+        tariffName,
+        endsAt.toISOString().slice(0, 10),
+        panelUrl,
+      ),
+    );
+  }
+
+  /** Admin obunani qo'lda bekor qilganda */
+  async sendSubscriptionCancelled(
+    to: string,
+    companyName: string,
+    tariffName: string,
+  ): Promise<void> {
+    const payUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/app/subscription`;
+    await this.send(
+      to,
+      'FaceID — Obuna bekor qilindi',
+      subscriptionCancelledTemplate(companyName, tariffName, payUrl),
     );
   }
 
