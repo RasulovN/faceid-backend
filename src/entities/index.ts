@@ -20,6 +20,7 @@ export { AuditLog } from './audit-log.entity';
 export { Notification } from './notification.entity';
 export { SiteSetting } from './site-setting.entity';
 export { SiteVisit } from './site-visit.entity';
+export { MobileErrorLog } from './mobile-error-log.entity';
 export { StorageSnapshot } from './storage-snapshot.entity';
 export { UsageDaily } from './usage-daily.entity';
 
@@ -33,6 +34,7 @@ import { Company } from './company.entity';
 import { Device } from './device.entity';
 import { Employee } from './employee.entity';
 import { FaceEmbedding } from './face-embedding.entity';
+import { MobileErrorLog } from './mobile-error-log.entity';
 import { Notification } from './notification.entity';
 import { Payment } from './payment.entity';
 import { PayrollRecord } from './payroll-record.entity';
@@ -73,6 +75,7 @@ export const ALL_ENTITIES = [
   Notification,
   SiteSetting,
   SiteVisit,
+  MobileErrorLog,
   StorageSnapshot,
   UsageDaily,
 ];

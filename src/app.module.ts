@@ -34,6 +34,7 @@ import { RolesModule } from './modules/roles/roles.module';
 import { RulesModule } from './modules/rules/rules.module';
 import { SchedulesModule } from './modules/schedules/schedules.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { MobileLogsModule } from './modules/mobile-logs/mobile-logs.module';
 import { SiteAnalyticsModule } from './modules/site-analytics/site-analytics.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { StorageAnalyticsModule } from './modules/storage-analytics/storage-analytics.module';
@@ -106,6 +107,7 @@ import { WsModule } from './modules/ws/ws.module';
     SettingsModule,
     StorageAnalyticsModule,
     SiteAnalyticsModule,
+    MobileLogsModule,
     UsageModule,
     LeadsModule,
   ],
