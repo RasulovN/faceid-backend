@@ -12,6 +12,8 @@ export class MinioService implements OnModuleInit {
   private readonly endpoint: string;
   private readonly port: number;
   private readonly useSSL: boolean;
+  /** Brauzer uchun URL bazasi (masalan https://backend.timepro.uz/s3); bo'sh — endpoint:port */
+  private readonly publicBase: string;
 
   constructor(private readonly config: ConfigService) {
     this.endpoint = this.config.getOrThrow<string>('MINIO_ENDPOINT');
@@ -19,6 +21,7 @@ export class MinioService implements OnModuleInit {
     // Joi validatsiyasi qiymatni boolean'ga aylantiradi — string bilan solishtirish
     // production'da (true) doim false bergani uchun String() orqali normallashtiriladi
     this.useSSL = String(this.config.get('MINIO_USE_SSL')) === 'true';
+    this.publicBase = (this.config.get<string>('MINIO_PUBLIC_URL') ?? '').trim().replace(/\/+$/, '');
     this.employeesBucket = this.config.getOrThrow<string>('MINIO_BUCKET_EMPLOYEES');
     this.snapshotsBucket = this.config.getOrThrow<string>('MINIO_BUCKET_SNAPSHOTS');
     this.client = new Minio.Client({
@@ -87,13 +90,20 @@ export class MinioService implements OnModuleInit {
     return this.publicUrl(bucket, key);
   }
 
-  /** Presigned PUT URL (klient to'g'ridan-to'g'ri yuklashi uchun) */
+  /**
+   * Presigned PUT URL (klient to'g'ridan-to'g'ri yuklashi uchun).
+   * MINIO_PUBLIC_URL berilgan bo'lsa host public bazaga almashtiriladi — imzo
+   * buzilmaydi, chunki nginx /s3/ prefiksni kesib Host headerni MINIO_ENDPOINT'ga
+   * qaytaradi (imzolangan canonical host/path MinIO'ga o'zgarishsiz yetadi).
+   */
   async presignPut(bucket: string, key: string): Promise<string> {
     const expires = Number(this.config.getOrThrow('MINIO_PRESIGNED_EXPIRES'));
-    return this.client.presignedPutObject(bucket, key, expires);
+    const url = await this.client.presignedPutObject(bucket, key, expires);
+    return this.publicBase ? url.replace(/^https?:\/\/[^/]+/, this.publicBase) : url;
   }
 
   publicUrl(bucket: string, key: string): string {
+    if (this.publicBase) return `${this.publicBase}/${bucket}/${key}`;
     const proto = this.useSSL ? 'https' : 'http';
     return `${proto}://${this.endpoint}:${this.port}/${bucket}/${key}`;
   }

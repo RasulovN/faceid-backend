@@ -49,6 +49,13 @@ export const envValidationSchema = Joi.object({
   MINIO_BUCKET_EMPLOYEES: Joi.string().default('employee-photos'),
   MINIO_BUCKET_SNAPSHOTS: Joi.string().default('attendance-snapshots'),
   MINIO_PRESIGNED_EXPIRES: Joi.number().default(3600),
+  /**
+   * Brauzerga qaytariladigan public URL bazasi (ixtiyoriy), masalan
+   * https://backend.timepro.uz/s3 — alohida s3 subdomen DNS'iga bog'liq qolmaslik
+   * uchun rasm URL'lari backend domeni orqali (nginx /s3/ → MinIO) beriladi.
+   * Bo'sh bo'lsa eski xatti-harakat: MINIO_ENDPOINT:MINIO_PORT (lokal dev).
+   */
+  MINIO_PUBLIC_URL: Joi.string().uri().allow('').default(''),
 
   // ---------- Face Service ----------
   FACE_SERVICE_URL: Joi.string().uri().default('http://localhost:8000'),
