@@ -147,6 +147,8 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
         'EX',
         60,
       );
+      // WS emit endi fonda (javobni kutdirmaydi) — mikrotasklar tugashini kutamiz
+      await new Promise((resolve) => setImmediate(resolve));
       expect(wsService.emitAttendanceNew).toHaveBeenCalled();
     });
 

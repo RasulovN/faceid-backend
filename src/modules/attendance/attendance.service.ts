@@ -163,6 +163,16 @@ export class AttendanceService {
     },
   ) {
     const { employee, embeddings } = await this.prepareMobileSession(user.id, fields);
+    // TEZ YO'L: debounce'ni OG'IR yuz tekshiruvidan oldin tekshiramiz —
+    // yaqinda qayd etilgan bo'lsa foydalanuvchi javobni darhol oladi
+    // (face-service'ga umuman borilmaydi).
+    if (await this.getDebounce(employee.id)) {
+      throw new AppException(
+        ErrorCodes.DEBOUNCE,
+        'Yaqinda davomat qayd etilgan. Biroz kuting.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     const verify = await this.verifyFrames({ id: user.id }, employee, frames, embeddings);
     return this.finalizeMobileEvent(employee, frames[0], fields, verify);
   }
@@ -186,7 +196,12 @@ export class AttendanceService {
     }
 
     // Obuna: WS oqimida HTTP SubscriptionGuard ishlamaydi — shu yerda tekshiramiz.
-    const company = await this.companyRepository.findOne({ where: { id: employee.companyId } });
+    // Kompaniya va embeddinglar bir-biriga bog'liq emas — PARALLEL o'qiladi
+    // (tekshiruvlar tartibi o'zgarmagan: obuna → geofence → mock → embeddings).
+    const [company, embeddings] = await Promise.all([
+      this.companyRepository.findOne({ where: { id: employee.companyId } }),
+      this.embeddingRepository.find({ where: { employeeId: employee.id } }),
+    ]);
     if (
       company &&
       (company.status === CompanyStatus.SUSPENDED || company.status === CompanyStatus.EXPIRED)
@@ -240,10 +255,7 @@ export class AttendanceService {
       );
     }
 
-    // 3) Enrolled embeddinglar
-    const embeddings = await this.embeddingRepository.find({
-      where: { employeeId: employee.id },
-    });
+    // 3) Enrolled embeddinglar (yuqorida parallel o'qilgan)
     if (embeddings.length === 0) {
       throw new AppException(
         ErrorCodes.FACE_NOT_FOUND,
@@ -296,8 +308,11 @@ export class AttendanceService {
       );
     }
 
-    const timezone = await this.companyTimezone(employee.companyId);
-    const snapshotUrl = await this.uploadSnapshot(employee.companyId, snapshot);
+    // Timezone (DB) va snapshot (S3) bir-biriga bog'liq emas — PARALLEL
+    const [timezone, snapshotUrl] = await Promise.all([
+      this.companyTimezone(employee.companyId),
+      this.uploadSnapshot(employee.companyId, snapshot),
+    ]);
     const event = await this.saveEventAndRecalc({
       employee,
       branchId: employee.branchId,
@@ -834,19 +849,24 @@ export class AttendanceService {
     const dateStr = dateStrInTz(event.timestamp, params.timezone);
     await this.workDayService.recalc(params.employee, dateStr, params.timezone);
 
-    const todayStats = await this.todayStats(params.employee.companyId, params.timezone);
-    this.wsService.emitAttendanceNew(params.employee.companyId, params.branchId, {
-      event: {
-        id: event.id,
-        type: event.type,
-        source: event.source,
-        timestamp: event.timestamp,
-        snapshotUrl: event.snapshotUrl,
-        isManual: event.isManual,
-      },
-      employee: this.employeeSummary(params.employee),
-      todayStats,
-    });
+    // Panel real-time yangilanishi (todayStats + WS emit) faqat admin panel
+    // uchun — kiosk/mobil klient javobini KUTDIRMAYDI (fonda bajariladi).
+    void this.todayStats(params.employee.companyId, params.timezone)
+      .then((todayStats) => {
+        this.wsService.emitAttendanceNew(params.employee.companyId, params.branchId, {
+          event: {
+            id: event.id,
+            type: event.type,
+            source: event.source,
+            timestamp: event.timestamp,
+            snapshotUrl: event.snapshotUrl,
+            isManual: event.isManual,
+          },
+          employee: this.employeeSummary(params.employee),
+          todayStats,
+        });
+      })
+      .catch(() => undefined);
 
     return event;
   }
