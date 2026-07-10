@@ -54,6 +54,14 @@ class PairingCodeDto {
   @ApiProperty({ enum: DeviceDirection })
   @IsIn(Object.values(DeviceDirection))
   direction: DeviceDirection;
+
+  @ApiPropertyOptional({
+    description:
+      "Qo'lda rejim (faqat BOTH uchun): kioskda avval Kirish/Chiqish tugmasi bosiladi, keyin yuz skanerlanadi",
+  })
+  @IsOptional()
+  @IsBoolean()
+  manualMode?: boolean;
 }
 
 class PairDto {
@@ -79,6 +87,11 @@ class UpdateDeviceDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  manualMode?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()

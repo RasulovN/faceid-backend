@@ -46,6 +46,18 @@ interface DebounceValue {
   timestamp: string;
 }
 
+/** Kalendar uchun kun kesimidagi davomat agregati (GET /attendance/monthly). */
+export interface MonthlyDayAggregate {
+  date: string;
+  /** Kelishi kerak bo'lganlar (VACATION/SICK kirmaydi) */
+  total: number;
+  /** Kelganlar (kechikkanlar ham kiradi) */
+  present: number;
+  late: number;
+  /** Sababsiz kelmaganlar */
+  absent: number;
+}
+
 @Injectable()
 export class AttendanceService {
   constructor(
@@ -68,7 +80,7 @@ export class AttendanceService {
 
   // ================= KIOSK =================
 
-  async kioskRecognize(device: Device, frame: Buffer) {
+  async kioskRecognize(device: Device, frame: Buffer, requestedType?: AttendanceEventType) {
     // Yuz-aniqlash FAQAT shu qurilmaning kompaniyasi VA filiali doirasida.
     // Boshqa filial yoki boshqa kompaniya xodimi nomzod ham bo'lmaydi → "yuz aniqlanmadi".
     const identify = await this.faceService.identify(frame, device.companyId, device.branchId);
@@ -76,7 +88,9 @@ export class AttendanceService {
       return { recognized: false as const, reason: identify.reason ?? 'FACE_NOT_RECOGNIZED' };
     }
     const livenessThreshold = Number(this.config.get('LIVENESS_THRESHOLD') ?? 0.7);
-    if (identify.livenessScore !== undefined && identify.livenessScore < livenessThreshold) {
+    // FAIL-CLOSED: skor umuman kelmasa (liveness engine yo'q/o'chirilgan) ham rad —
+    // haqiqiyligi TASDIQLANMAGAN yuz hech qachon qayd etilmaydi.
+    if (identify.livenessScore == null || identify.livenessScore < livenessThreshold) {
       return { recognized: false as const, reason: 'LIVENESS_FAILED' };
     }
 
@@ -105,7 +119,12 @@ export class AttendanceService {
     }
 
     const timezone = await this.companyTimezone(device.companyId);
-    const type = await this.resolveEventType(device.direction, employee.id, timezone);
+    // Qo'lda rejimda xodim bosgan tugma yo'nalishni belgilaydi — faqat
+    // manualMode yoqilgan BOTH qurilmada; aks holda avtomatik aniqlash.
+    const type =
+      requestedType && device.manualMode && device.direction === DeviceDirection.BOTH
+        ? requestedType
+        : await this.resolveEventType(device.direction, employee.id, timezone);
     const snapshotUrl = await this.uploadSnapshot(device.companyId, frame);
 
     const event = await this.saveEventAndRecalc({
@@ -486,48 +505,75 @@ export class AttendanceService {
     });
   }
 
-  async monthly(companyId: string, query: MonthlyQueryDto) {
+  /**
+   * Kalendar uchun KUN KESIMIDAGI agregat (API kontrakt: MonthlyDayAggregate[]):
+   * har kun uchun { date, total, present, late, absent } —
+   *   total   = kelishi kerak bo'lganlar (VACATION/SICK hisobga kirmaydi),
+   *   present = kelganlar (kechikkanlar ham kiradi),
+   *   late    = kechikkanlar,
+   *   absent  = sababsiz kelmaganlar.
+   * BUGUNGI kun uchun tungi recalc hali yozmagan xodimlar (grafik bo'yicha
+   * kutilayotgan, lekin hali kelmagan) ham total+absent'ga qo'shiladi —
+   * aks holda bugun faqat kelganlar ko'rinib 100% chiqib qolar edi.
+   */
+  async monthly(companyId: string, query: MonthlyQueryDto): Promise<MonthlyDayAggregate[]> {
     const from = `${query.month}-01`;
     const to = addDaysToDateStr(`${query.month}-01`, 31).slice(0, 8) + '01';
     const rows = await this.workDayRepository
       .createQueryBuilder('wd')
-      .innerJoinAndSelect('wd.employee', 'employee')
+      .innerJoin('wd.employee', 'employee')
       .where('employee."companyId" = :companyId', { companyId })
       .andWhere('employee."deletedAt" IS NULL')
       .andWhere('wd.date >= :from AND wd.date < :to', { from, to })
       .andWhere(query.branchId ? 'employee."branchId" = :branchId' : 'TRUE', {
         branchId: query.branchId,
       })
-      .orderBy('employee."lastName"', 'ASC')
-      .addOrderBy('wd.date', 'ASC')
       .getMany();
 
-    const byEmployee = new Map<string, { employee: Employee; days: WorkDay[] }>();
-    for (const row of rows) {
-      const entry = byEmployee.get(row.employeeId) ?? { employee: row.employee!, days: [] };
-      entry.days.push(row);
-      byEmployee.set(row.employeeId, entry);
+    const byDate = new Map<string, MonthlyDayAggregate>();
+    // Kun bo'yicha yozuvi BOR xodimlar — bugungi "hali kelmagan"larni
+    // ikki marta sanamaslik uchun
+    const seenByDate = new Map<string, Set<string>>();
+    for (const wd of rows) {
+      let seen = seenByDate.get(wd.date);
+      if (!seen) seenByDate.set(wd.date, (seen = new Set()));
+      seen.add(wd.employeeId);
+      // Ta'til/kasallik — kelishi kutilmaydi, kalendar foizlariga kirmaydi
+      if (wd.status === WorkDayStatus.VACATION || wd.status === WorkDayStatus.SICK) continue;
+      let agg = byDate.get(wd.date);
+      if (!agg) byDate.set(wd.date, (agg = { date: wd.date, total: 0, present: 0, late: 0, absent: 0 }));
+      agg.total += 1;
+      if (wd.status === WorkDayStatus.PRESENT || wd.status === WorkDayStatus.LATE) {
+        agg.present += 1;
+      }
+      if (wd.status === WorkDayStatus.LATE) agg.late += 1;
+      if (wd.status === WorkDayStatus.ABSENT && !wd.isExcused) agg.absent += 1;
     }
-    return [...byEmployee.values()].map(({ employee, days }) => ({
-      employee: this.employeeSummary(employee),
-      days: days.map((d) => ({
-        date: d.date,
-        status: d.status,
-        workedMinutes: d.workedMinutes,
-        lateMinutes: d.lateMinutes,
-        overtimeMinutes: d.overtimeMinutes,
-      })),
-      totals: {
-        presentDays: days.filter(
-          (d) => d.status === WorkDayStatus.PRESENT || d.status === WorkDayStatus.LATE,
-        ).length,
-        lateDays: days.filter((d) => d.status === WorkDayStatus.LATE).length,
-        absentDays: days.filter((d) => d.status === WorkDayStatus.ABSENT).length,
-        workedMinutes: days.reduce((s, d) => s + d.workedMinutes, 0),
-        lateMinutes: days.reduce((s, d) => s + d.lateMinutes, 0),
-        overtimeMinutes: days.reduce((s, d) => s + d.overtimeMinutes, 0),
-      },
-    }));
+
+    // Bugun: grafik bo'yicha kutilayotgan, lekin hali WorkDay yozuvi yo'q
+    // xodimlar → "hali kelmagan" (total + absent)
+    const timezone = await this.companyTimezone(companyId);
+    const todayStr = dateStrInTz(new Date(), timezone);
+    if (todayStr >= from && todayStr < to) {
+      const expectedIds = await this.workDayService.expectedEmployeeIds(
+        companyId,
+        todayStr,
+        timezone,
+        query.branchId,
+      );
+      const seen = seenByDate.get(todayStr) ?? new Set<string>();
+      const missing = expectedIds.filter((id) => !seen.has(id)).length;
+      if (missing > 0) {
+        let agg = byDate.get(todayStr);
+        if (!agg) {
+          byDate.set(todayStr, (agg = { date: todayStr, total: 0, present: 0, late: 0, absent: 0 }));
+        }
+        agg.total += missing;
+        agg.absent += missing;
+      }
+    }
+
+    return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   /**

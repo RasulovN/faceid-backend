@@ -150,6 +150,66 @@ export class WorkDayService {
     return this.workDayRepository.save(workDay);
   }
 
+  /**
+   * Sanada KELISHI KUTILADIGAN xodimlar (bulk — kalendar/statistika uchun).
+   * Amaldagi grafik (individual > filial grafigi > filial workingHoursDefault)
+   * bo'yicha shu hafta kunida ish belgilangan ACTIVE xodimlar qaytadi.
+   * Bayram kuni hech kim kutilmaydi. resolveSchedule'dan farqi — hamma
+   * grafiklar 3 ta so'rov bilan yuklanib xotirada moslashtiriladi (N xodim
+   * uchun N×3 so'rov emas).
+   */
+  async expectedEmployeeIds(
+    companyId: string,
+    dateStr: string,
+    timezone: string,
+    branchId?: string,
+  ): Promise<string[]> {
+    const isHoliday = await this.holidayRepository.exists({
+      where: { companyId, date: dateStr },
+    });
+    if (isHoliday) return [];
+
+    const employees = await this.employeeRepository.find({
+      where: {
+        companyId,
+        deletedAt: IsNull(),
+        status: EmployeeStatus.ACTIVE,
+        ...(branchId ? { branchId } : {}),
+      },
+    });
+    if (employees.length === 0) return [];
+
+    const [schedules, branches] = await Promise.all([
+      this.scheduleRepository.find({ where: { companyId }, order: { createdAt: 'DESC' } }),
+      this.branchRepository.find({ where: { companyId } }),
+    ]);
+    // createdAt DESC — birinchi uchragani eng yangisi (resolveSchedule bilan bir xil)
+    const individual = new Map<string, ScheduleDay[]>();
+    const byBranch = new Map<string, ScheduleDay[]>();
+    for (const s of schedules) {
+      if (s.employeeId) {
+        if (!individual.has(s.employeeId)) individual.set(s.employeeId, s.days);
+      } else if (s.branchId) {
+        if (!byBranch.has(s.branchId)) byBranch.set(s.branchId, s.days);
+      }
+    }
+    const branchDefault = new Map(branches.map((b) => [b.id, b.workingHoursDefault ?? null]));
+
+    const dow = dayOfWeekInTz(zonedTimeToUtc(dateStr, '12:00', timezone), timezone);
+    const worksToday = (days: ScheduleDay[] | null | undefined): boolean =>
+      !!days?.some((d) => d.dayOfWeek === dow);
+
+    return employees
+      .filter((e) => {
+        const ind = individual.get(e.id);
+        if (ind) return worksToday(ind);
+        const br = byBranch.get(e.branchId);
+        if (br) return worksToday(br);
+        return worksToday(branchDefault.get(e.branchId));
+      })
+      .map((e) => e.id);
+  }
+
   /** Kompaniyaning barcha ACTIVE/VACATION xodimlari uchun sanani hisoblaydi (tungi job) */
   async recalcAllForDate(dateStr?: string): Promise<number> {
     const companies = await this.companyRepository.find();

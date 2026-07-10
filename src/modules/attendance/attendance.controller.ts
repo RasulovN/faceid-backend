@@ -65,9 +65,16 @@ export class AttendanceController {
   @ApiHeader({ name: 'X-Device-Token', required: true })
   @ApiOperation({ summary: 'Kiosk frame → identify → davomat eventi' })
   async kioskRecognize(@CurrentDevice() device: Device, @Req() req: FastifyRequest) {
-    const { files } = await parseMultipart(req, { maxFiles: 1, imagesOnly: true });
+    const { files, fields } = await parseMultipart(req, { maxFiles: 1, imagesOnly: true });
     if (files.length === 0) throw AppException.validation('`frame` fayli yuborilmagan');
-    return this.attendanceService.kioskRecognize(device, files[0].buffer);
+    // Qo'lda rejim: kiosk xodim bosgan tugma yo'nalishini yuboradi.
+    // Faqat ruxsat etilgan qiymatlar qabul qilinadi, aks holda e'tiborsiz.
+    const rawDirection = fields['direction'];
+    const requestedType =
+      rawDirection === AttendanceEventType.CHECK_IN || rawDirection === AttendanceEventType.CHECK_OUT
+        ? (rawDirection as AttendanceEventType)
+        : undefined;
+    return this.attendanceService.kioskRecognize(device, files[0].buffer, requestedType);
   }
 
   // ---------- Mobile ----------

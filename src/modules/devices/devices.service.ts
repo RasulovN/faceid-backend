@@ -21,6 +21,7 @@ interface PairingPayload {
   branchId: string;
   name: string;
   direction: DeviceDirection;
+  manualMode: boolean;
 }
 
 @Injectable()
@@ -54,7 +55,13 @@ export class DevicesService {
   async update(
     companyId: string,
     id: string,
-    dto: { name?: string; direction?: DeviceDirection; isActive?: boolean; branchId?: string },
+    dto: {
+      name?: string;
+      direction?: DeviceDirection;
+      isActive?: boolean;
+      manualMode?: boolean;
+      branchId?: string;
+    },
   ) {
     const device = await this.getEntity(companyId, id);
     if (dto.branchId && dto.branchId !== device.branchId) {
@@ -66,6 +73,9 @@ export class DevicesService {
     }
     if (dto.name !== undefined) device.name = dto.name;
     if (dto.direction !== undefined) device.direction = dto.direction;
+    if (dto.manualMode !== undefined) device.manualMode = dto.manualMode;
+    // Qo'lda rejim faqat ikki tomonlama (BOTH) qurilmada ma'noli
+    if (device.direction !== DeviceDirection.BOTH) device.manualMode = false;
     if (dto.isActive !== undefined && dto.isActive !== device.isActive) {
       device.isActive = dto.isActive;
       this.wsService.emitDeviceStatus(companyId, {
@@ -88,7 +98,7 @@ export class DevicesService {
 
   async createPairingCode(
     companyId: string,
-    dto: { branchId: string; name: string; direction: DeviceDirection },
+    dto: { branchId: string; name: string; direction: DeviceDirection; manualMode?: boolean },
   ) {
     const branch = await this.branchRepository.exists({
       where: { id: dto.branchId, companyId },
@@ -107,6 +117,8 @@ export class DevicesService {
       branchId: dto.branchId,
       name: dto.name,
       direction: dto.direction,
+      // Qo'lda rejim faqat BOTH uchun ma'noli — boshqa yo'nalishda e'tiborsiz
+      manualMode: dto.manualMode === true && dto.direction === DeviceDirection.BOTH,
     };
     await this.redis.set(this.pairKey(code), JSON.stringify(payload), 'EX', PAIRING_TTL_SECONDS);
     return {
@@ -138,6 +150,7 @@ export class DevicesService {
         branchId: payload.branchId,
         name: payload.name,
         direction: payload.direction,
+        manualMode: payload.manualMode ?? false,
         deviceToken: generateDeviceToken(),
         lastSeenAt: new Date(),
       }),
@@ -159,6 +172,7 @@ export class DevicesService {
         id: device.id,
         name: device.name,
         direction: device.direction,
+        manualMode: device.manualMode,
         branch: branch ? { id: branch.id, name: branch.name } : null,
         company: company ? { id: company.id, name: company.name } : null,
       },
@@ -174,7 +188,12 @@ export class DevicesService {
       isActive: device.isActive,
       lastSeenAt: device.lastSeenAt,
     });
-    return { ok: true, direction: device.direction, isActive: device.isActive };
+    return {
+      ok: true,
+      direction: device.direction,
+      manualMode: device.manualMode,
+      isActive: device.isActive,
+    };
   }
 
   private async getEntity(companyId: string, id: string): Promise<Device> {

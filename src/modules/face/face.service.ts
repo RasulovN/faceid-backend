@@ -14,7 +14,8 @@ export interface IdentifyResult {
   matched: boolean;
   employeeId?: string;
   confidence?: number;
-  livenessScore?: number;
+  /** null — face-service liveness'ni tekshirmagan (engine yo'q/o'chirilgan) */
+  livenessScore?: number | null;
   reason?: 'FACE_NOT_RECOGNIZED' | 'FACE_NOT_FOUND' | 'LIVENESS_FAILED';
 }
 
@@ -151,7 +152,7 @@ export class FaceService {
       found: boolean;
       employee_id?: string | null;
       similarity?: number;
-      liveness_score?: number;
+      liveness_score?: number | null;
       liveness_passed?: boolean;
       error?: string | null;
     }>('/identify', {
@@ -173,7 +174,7 @@ export class FaceService {
       matched: res.found,
       employeeId: res.employee_id ?? undefined,
       confidence: res.similarity,
-      livenessScore: res.liveness_score,
+      livenessScore: res.liveness_score ?? null,
       reason,
     };
   }

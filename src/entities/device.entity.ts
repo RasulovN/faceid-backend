@@ -46,6 +46,15 @@ export class Device {
   })
   direction: DeviceDirection;
 
+  /**
+   * Qo'lda rejim (faqat direction=BOTH uchun ma'noli): kioskda xodim avval
+   * "Kirish" yoki "Chiqish" tugmasini bosadi, keyin yuz skanerlanadi.
+   * Eshik yonidan shunchaki o'tib ketganda kamera avtomatik qayd
+   * qilib yubormasligi uchun. Default: o'chirilgan (avtomatik rejim).
+   */
+  @Column({ type: 'boolean', default: false })
+  manualMode: boolean;
+
   @Column({ type: 'timestamptz', nullable: true })
   lastSeenAt: Date | null;
 
