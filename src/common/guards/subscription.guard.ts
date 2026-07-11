@@ -17,6 +17,7 @@ interface CacheEntry {
 /**
  * Kompaniya SUSPENDED/EXPIRED bo'lsa faqat o'qish (GET) mumkin,
  * yozish so'rovlari 402 SUBSCRIPTION_EXPIRED bilan rad etiladi.
+ * PENDING (superadmin hali tasdiqlamagan) bo'lsa ham yozish bloklanadi (403 COMPANY_PENDING).
  */
 @Injectable()
 export class SubscriptionGuard implements CanActivate {
@@ -42,6 +43,13 @@ export class SubscriptionGuard implements CanActivate {
     if (skip) return true;
 
     const status = await this.getCompanyStatus(user.companyId);
+    if (status === CompanyStatus.PENDING) {
+      throw new AppException(
+        ErrorCodes.COMPANY_PENDING,
+        'Kompaniyangiz hali administrator tomonidan tasdiqlanmagan. Tasdiqlangach tizimdan to‘liq foydalana olasiz.',
+        HttpStatus.FORBIDDEN,
+      );
+    }
     if (status === CompanyStatus.SUSPENDED || status === CompanyStatus.EXPIRED) {
       throw new AppException(
         ErrorCodes.SUBSCRIPTION_EXPIRED,

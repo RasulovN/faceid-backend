@@ -23,6 +23,7 @@ import { AppException } from '../../common/exceptions/app.exception';
 import { EmployeeStatus, UserRole } from '../../common/enums';
 import { Paginated } from '../../common/dto/pagination.dto';
 import { generatePassword } from '../../common/utils/crypto.util';
+import { slugify } from '../../common/utils/slug.util';
 import { UploadedFile } from '../../common/utils/multipart.util';
 import { addDaysToDateStr, zonedTimeToUtc } from '../../common/utils/tz.util';
 import { FaceService } from '../face/face.service';
@@ -110,14 +111,29 @@ export class EmployeesService {
     });
     if (!branch) throw AppException.notFound('Filial topilmadi');
 
-    const { username, email, phone } = dto.credentials;
+    const email = dto.credentials.email?.trim().toLowerCase() || null;
+    const phone = dto.credentials.phone?.trim() || null;
+    if (!email && !phone) {
+      throw AppException.validation('Email yoki telefon raqamidan kamida bittasini kiriting');
+    }
+    if (!dto.credentials.password && !email) {
+      throw AppException.validation(
+        'Parolni avtogeneratsiya qilib yuborish uchun email kiritilishi shart',
+      );
+    }
+    const username =
+      dto.credentials.username?.trim().toLowerCase() ||
+      (await this.generateUsername(dto.firstName, dto.lastName));
     await this.assertCredentialsUnique(username, email, phone);
+
+    const tabNumber = dto.tabNumber?.trim() || (await this.generateTabNumber(companyId));
     if (
-      await this.employeeRepository.exists({
-        where: { companyId, tabNumber: dto.tabNumber, deletedAt: IsNull() },
-      })
+      dto.tabNumber &&
+      (await this.employeeRepository.exists({
+        where: { companyId, tabNumber, deletedAt: IsNull() },
+      }))
     ) {
-      throw AppException.conflict(`Tab raqami "${dto.tabNumber}" allaqachon band`);
+      throw AppException.conflict(`Tab raqami "${tabNumber}" allaqachon band`);
     }
 
     const generatedPassword = dto.credentials.password ? null : generatePassword(12);
@@ -127,8 +143,8 @@ export class EmployeesService {
     const employee = await this.dataSource.transaction(async (manager) => {
       const user = await manager.getRepository(User).save(
         manager.getRepository(User).create({
-          username: username.toLowerCase(),
-          email: email.toLowerCase(),
+          username,
+          email,
           phone,
           passwordHash,
           role: UserRole.EMPLOYEE,
@@ -148,7 +164,7 @@ export class EmployeesService {
           gender: dto.gender ?? null,
           position: dto.position ?? null,
           department: dto.department ?? null,
-          tabNumber: dto.tabNumber,
+          tabNumber,
           hiredAt: dto.hiredAt ?? null,
           salaryType: dto.salaryType,
           salaryAmount: dto.salaryAmount,
@@ -164,7 +180,7 @@ export class EmployeesService {
       return created;
     });
 
-    if (generatedPassword) {
+    if (generatedPassword && email) {
       const company = await this.companyRepository.findOne({ where: { id: companyId } });
       await this.mailService.sendEmployeeCredentials(
         email,
@@ -444,23 +460,62 @@ export class EmployeesService {
 
   private async assertCredentialsUnique(
     username: string,
-    email: string,
-    phone: string,
+    email: string | null,
+    phone: string | null,
   ): Promise<void> {
     const conflicts: string[] = [];
     if (await this.userRepository.exists({ where: { username: username.toLowerCase() } })) {
       conflicts.push('username');
     }
-    if (await this.userRepository.exists({ where: { email: email.toLowerCase() } })) {
+    if (email && (await this.userRepository.exists({ where: { email } }))) {
       conflicts.push('email');
     }
-    if (await this.userRepository.exists({ where: { phone } })) {
+    if (phone && (await this.userRepository.exists({ where: { phone } }))) {
       conflicts.push('phone');
     }
     if (conflicts.length > 0) {
       throw AppException.conflict(`Credentials band: ${conflicts.join(', ')}`, {
         fields: conflicts,
       });
+    }
+  }
+
+  /** Ism-familiyadan unikal username yasaydi (kirill → lotin, band bo'lsa raqamli suffiks) */
+  private async generateUsername(firstName: string, lastName: string): Promise<string> {
+    const base =
+      slugify(`${firstName} ${lastName}`).replace(/-/g, '.').slice(0, 48) || 'xodim';
+    const padded = base.length >= 3 ? base : `${base}user`.slice(0, 8);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const candidate = attempt === 0 ? padded : `${padded}${attempt + 1}`;
+      if (!(await this.userRepository.exists({ where: { username: candidate } }))) {
+        return candidate;
+      }
+    }
+    return `${padded}.${Date.now().toString(36)}`;
+  }
+
+  /** Kompaniyadagi eng katta raqamdan keyingi bo'sh tab raqamini topadi (T-001 formatida) */
+  private async generateTabNumber(companyId: string): Promise<string> {
+    // Soft-o'chirilgan xodimlar raqami ham qayta ishlatilmasin
+    const existing = await this.employeeRepository.find({
+      where: { companyId },
+      select: { tabNumber: true },
+      withDeleted: true,
+    });
+    let max = 0;
+    for (const e of existing) {
+      const match = /(\d+)\s*$/.exec(e.tabNumber ?? '');
+      if (match) max = Math.max(max, parseInt(match[1], 10));
+    }
+    let next = max + 1;
+    for (;;) {
+      const candidate = `T-${String(next).padStart(3, '0')}`;
+      const taken = await this.employeeRepository.exists({
+        where: { companyId, tabNumber: candidate },
+        withDeleted: true,
+      });
+      if (!taken) return candidate;
+      next += 1;
     }
   }
 }

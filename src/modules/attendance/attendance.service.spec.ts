@@ -15,7 +15,7 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
   let companyRepository: any;
   let workDayRepository: any;
   let embeddingRepository: any;
-  let redis: { get: jest.Mock; set: jest.Mock };
+  let redis: { get: jest.Mock; set: jest.Mock; del: jest.Mock };
   let faceService: { identify: jest.Mock; verify: jest.Mock; verifyLive: jest.Mock };
   let auditService: { log: jest.Mock };
   let wsService: { emitAttendanceNew: jest.Mock };
@@ -73,7 +73,7 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
       })),
     };
     embeddingRepository = { find: jest.fn(async () => [{ embedding: [0.1, 0.2] }]) };
-    redis = { get: jest.fn(async () => null), set: jest.fn() };
+    redis = { get: jest.fn(async () => null), set: jest.fn(), del: jest.fn(async () => 1) };
     faceService = {
       identify: jest.fn(async () => ({
         matched: true,
@@ -169,6 +169,85 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
       });
       const result = await service.kioskRecognize(device, Buffer.from('frame'));
       expect(result).toEqual({ recognized: false, reason: 'LIVENESS_FAILED' });
+      expect(eventRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("kiosk qo'lda rejim (identify → confirm)", () => {
+    it('identify: xodim tanildi → pending saqlanadi, event YOZILMAYDI', async () => {
+      const result = await service.kioskIdentify(device, Buffer.from('frame'));
+      expect(result).toMatchObject({ recognized: true, pending: true });
+      expect(eventRepository.save).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledWith(
+        'kiosk:manual:pending:dev-1',
+        expect.any(String),
+        'EX',
+        expect.any(Number),
+      );
+    });
+
+    it('identify: bazada topilmadi → pending YO‘Q, tanilmadi', async () => {
+      faceService.identify.mockResolvedValue({ matched: false, reason: 'FACE_NOT_RECOGNIZED' });
+      const result = await service.kioskIdentify(device, Buffer.from('frame'));
+      expect(result).toEqual({ recognized: false, reason: 'FACE_NOT_RECOGNIZED' });
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it("confirm: pending bor → tanlangan yo'nalish bilan event yoziladi", async () => {
+      redis.get.mockImplementation(async (key: string) =>
+        key === 'kiosk:manual:pending:dev-1'
+          ? JSON.stringify({
+              employeeId: 'emp-1',
+              confidence: 0.91,
+              livenessScore: 0.93,
+              snapshotUrl: 'http://minio/snap.jpg',
+            })
+          : null,
+      );
+      const result = await service.kioskConfirm(device, AttendanceEventType.CHECK_OUT);
+      expect(result).toMatchObject({ recognized: true });
+      expect(eventRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: AttendanceEventType.CHECK_OUT,
+          confidence: 0.91,
+          snapshotUrl: 'http://minio/snap.jpg',
+        }),
+      );
+    });
+
+    it('confirm: pending yo‘q (muddati tugagan) → xato, event yozilmaydi', async () => {
+      await expect(service.kioskConfirm(device, AttendanceEventType.CHECK_IN)).rejects.toThrow();
+      expect(eventRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('kiosk filial scope', () => {
+    it("default: identify FAQAT qurilma filiali doirasida chaqiriladi", async () => {
+      await service.kioskRecognize(device, Buffer.from('frame'));
+      expect(faceService.identify).toHaveBeenCalledWith(expect.anything(), 'c1', 'b1');
+      expect(employeeRepository.findOne).toHaveBeenCalledWith({
+        where: expect.objectContaining({ companyId: 'c1', branchId: 'b1' }),
+      });
+    });
+
+    it('allowCrossBranchAttendance=true: identify butun kompaniya doirasida', async () => {
+      companyRepository.findOne.mockResolvedValue({
+        id: 'c1',
+        timezone: 'Asia/Tashkent',
+        settings: { allowCrossBranchAttendance: true },
+      });
+      await service.kioskRecognize(device, Buffer.from('frame'));
+      expect(faceService.identify).toHaveBeenCalledWith(expect.anything(), 'c1', null);
+      const where = employeeRepository.findOne.mock.calls[0][0].where;
+      expect(where.branchId).toBeUndefined();
+      expect(where.companyId).toBe('c1');
+    });
+
+    it("boshqa filial xodimi (cross-branch o'chiq) → tanilmadi", async () => {
+      // identify topdi, lekin xodim qurilma filialiga tegishli emas → lookup null
+      employeeRepository.findOne.mockResolvedValue(null);
+      const result = await service.kioskRecognize(device, Buffer.from('frame'));
+      expect(result).toEqual({ recognized: false, reason: 'FACE_NOT_RECOGNIZED' });
       expect(eventRepository.save).not.toHaveBeenCalled();
     });
   });

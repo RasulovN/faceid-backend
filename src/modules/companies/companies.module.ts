@@ -7,6 +7,7 @@ import { Device } from '../../entities/device.entity';
 import { Employee } from '../../entities/employee.entity';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
+import { Tariff } from '../../entities/tariff.entity';
 import { User } from '../../entities/user.entity';
 import { CompaniesController } from './companies.controller';
 import { CompaniesService } from './companies.service';
@@ -21,6 +22,7 @@ import { CompaniesService } from './companies.service';
       Subscription,
       Payment,
       User,
+      Tariff,
       AttendanceEvent,
     ]),
   ],

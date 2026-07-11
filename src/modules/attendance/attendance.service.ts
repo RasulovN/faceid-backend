@@ -46,6 +46,17 @@ interface DebounceValue {
   timestamp: string;
 }
 
+/** Qo'lda rejim 1-bosqich (identify) natijasi — tugma bosilguncha Redis'da turadi */
+interface KioskPendingValue {
+  employeeId: string;
+  confidence: number | null;
+  livenessScore: number | null;
+  snapshotUrl: string | null;
+}
+
+/** Tanlov oynasi TTL: klientdagi 12s oyna + tarmoq/reaksiya zaxirasi */
+const KIOSK_PENDING_TTL_SECONDS = 30;
+
 /** Kalendar uchun kun kesimidagi davomat agregati (GET /attendance/monthly). */
 export interface MonthlyDayAggregate {
   date: string;
@@ -80,32 +91,72 @@ export class AttendanceService {
 
   // ================= KIOSK =================
 
-  async kioskRecognize(device: Device, frame: Buffer, requestedType?: AttendanceEventType) {
-    // Yuz-aniqlash FAQAT shu qurilmaning kompaniyasi VA filiali doirasida.
-    // Boshqa filial yoki boshqa kompaniya xodimi nomzod ham bo'lmaydi → "yuz aniqlanmadi".
-    const identify = await this.faceService.identify(frame, device.companyId, device.branchId);
+  /**
+   * Kiosk kadri uchun umumiy "darvoza": identify → liveness → xodim tekshiruvi.
+   * Yuz-aniqlash HAR DOIM faqat shu qurilmaning kompaniyasi doirasida.
+   * Filial cheklovi sozlanadigan: settings.allowCrossBranchAttendance=true bo'lsa
+   * kompaniyaning istalgan filiali xodimi taniladi, aks holda (default) FAQAT
+   * qurilma filiali — boshqa filial/kompaniya xodimi nomzod ham bo'lmaydi → "tanilmadi".
+   */
+  private async kioskGate(
+    device: Device,
+    frame: Buffer,
+  ): Promise<
+    | { ok: false; failure: { recognized: false; reason: string } }
+    | {
+        ok: true;
+        employee: Employee;
+        company: Company | null;
+        confidence: number | null;
+        livenessScore: number | null;
+      }
+  > {
+    const company = await this.companyRepository.findOne({ where: { id: device.companyId } });
+    const allowCrossBranch = company?.settings?.['allowCrossBranchAttendance'] === true;
+    const identify = await this.faceService.identify(
+      frame,
+      device.companyId,
+      allowCrossBranch ? null : device.branchId,
+    );
     if (!identify.matched || !identify.employeeId) {
-      return { recognized: false as const, reason: identify.reason ?? 'FACE_NOT_RECOGNIZED' };
+      return {
+        ok: false,
+        failure: { recognized: false, reason: identify.reason ?? 'FACE_NOT_RECOGNIZED' },
+      };
     }
     const livenessThreshold = Number(this.config.get('LIVENESS_THRESHOLD') ?? 0.7);
     // FAIL-CLOSED: skor umuman kelmasa (liveness engine yo'q/o'chirilgan) ham rad —
     // haqiqiyligi TASDIQLANMAGAN yuz hech qachon qayd etilmaydi.
     if (identify.livenessScore == null || identify.livenessScore < livenessThreshold) {
-      return { recognized: false as const, reason: 'LIVENESS_FAILED' };
+      return { ok: false, failure: { recognized: false, reason: 'LIVENESS_FAILED' } };
     }
 
-    // Qo'shimcha himoya: identifikatsiya qilingan xodim aynan shu kompaniya + filialga tegishli bo'lsin.
+    // Qo'shimcha himoya: identifikatsiya qilingan xodim aynan shu kompaniyaga
+    // (filiallararo ruxsat bo'lmasa — shu filialga ham) tegishli bo'lsin.
     const employee = await this.employeeRepository.findOne({
       where: {
         id: identify.employeeId,
         companyId: device.companyId,
-        branchId: device.branchId,
+        ...(allowCrossBranch ? {} : { branchId: device.branchId }),
         deletedAt: IsNull(),
       },
     });
     if (!employee || employee.status === EmployeeStatus.FIRED) {
-      return { recognized: false as const, reason: 'FACE_NOT_RECOGNIZED' };
+      return { ok: false, failure: { recognized: false, reason: 'FACE_NOT_RECOGNIZED' } };
     }
+    return {
+      ok: true,
+      employee,
+      company,
+      confidence: this.finiteOrNull(identify.confidence),
+      livenessScore: this.finiteOrNull(identify.livenessScore),
+    };
+  }
+
+  async kioskRecognize(device: Device, frame: Buffer, requestedType?: AttendanceEventType) {
+    const gate = await this.kioskGate(device, frame);
+    if (!gate.ok) return gate.failure;
+    const { employee, company } = gate;
 
     // Debounce: qisqa vaqt ichida takror urinish
     const debounced = await this.getDebounce(employee.id);
@@ -118,7 +169,7 @@ export class AttendanceService {
       };
     }
 
-    const timezone = await this.companyTimezone(device.companyId);
+    const timezone = company?.timezone || 'Asia/Tashkent';
     // Qo'lda rejimda xodim bosgan tugma yo'nalishni belgilaydi — faqat
     // manualMode yoqilgan BOTH qurilmada; aks holda avtomatik aniqlash.
     const type =
@@ -134,8 +185,8 @@ export class AttendanceService {
       type,
       source: AttendanceSource.KIOSK,
       timestamp: new Date(),
-      confidence: this.finiteOrNull(identify.confidence),
-      livenessScore: this.finiteOrNull(identify.livenessScore),
+      confidence: gate.confidence,
+      livenessScore: gate.livenessScore,
       snapshotUrl,
       timezone,
     });
@@ -144,9 +195,120 @@ export class AttendanceService {
       recognized: true as const,
       employee: this.employeeSummary(employee),
       event: { id: event.id, type: event.type, timestamp: event.timestamp },
-      confidence: identify.confidence ?? null,
-      livenessScore: identify.livenessScore ?? null,
+      confidence: gate.confidence,
+      livenessScore: gate.livenessScore,
     };
+  }
+
+  /**
+   * QO'LDA REJIM 1-bosqich: AVVAL yuz tanladi (DB tekshiruvi), event YOZILMAYDI.
+   * Natija Redis'da pending sifatida saqlanadi — xodim keyin Kirish/Chiqish
+   * tugmasini bosganda kioskConfirm event yozadi. Tanilmasa kiosk tugma
+   * ko'rsatmasdan "Tanilmadi" chiqaradi.
+   */
+  async kioskIdentify(device: Device, frame: Buffer) {
+    const gate = await this.kioskGate(device, frame);
+    if (!gate.ok) return gate.failure;
+    const { employee } = gate;
+
+    // Yaqinda qayd etilgan bo'lsa tugma so'ralmaydi — darhol duplicate
+    const debounced = await this.getDebounce(employee.id);
+    if (debounced) {
+      return {
+        recognized: true as const,
+        duplicate: true as const,
+        employee: this.employeeSummary(employee),
+        event: { id: debounced.eventId, type: debounced.type, timestamp: debounced.timestamp },
+      };
+    }
+
+    // Snapshot hozir yuklanadi — confirm bosqichida kadr qayta yuborilmaydi
+    const snapshotUrl = await this.uploadSnapshot(device.companyId, frame);
+    const pending: KioskPendingValue = {
+      employeeId: employee.id,
+      confidence: gate.confidence,
+      livenessScore: gate.livenessScore,
+      snapshotUrl,
+    };
+    await this.redis.set(
+      this.kioskPendingKey(device.id),
+      JSON.stringify(pending),
+      'EX',
+      KIOSK_PENDING_TTL_SECONDS,
+    );
+
+    return {
+      recognized: true as const,
+      pending: true as const,
+      employee: this.employeeSummary(employee),
+      confidence: gate.confidence,
+      livenessScore: gate.livenessScore,
+    };
+  }
+
+  /**
+   * QO'LDA REJIM 2-bosqich: xodim tugmani bosdi — pending'dan event yoziladi.
+   * Pending bir martalik (del bilan claim) va TTL bilan o'z-o'zidan o'chadi.
+   */
+  async kioskConfirm(device: Device, type: AttendanceEventType) {
+    const key = this.kioskPendingKey(device.id);
+    const raw = await this.redis.get(key);
+    // Atomik claim: parallel confirm'dan faqat bittasi event yozadi
+    if (!raw || (await this.redis.del(key)) === 0) {
+      throw new AppException(
+        ErrorCodes.NOT_FOUND,
+        "Tanlov vaqti tugadi — yuzingizni qayta ko'rsating",
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const pending = JSON.parse(raw) as KioskPendingValue;
+
+    const employee = await this.employeeRepository.findOne({
+      where: { id: pending.employeeId, companyId: device.companyId, deletedAt: IsNull() },
+    });
+    if (!employee || employee.status === EmployeeStatus.FIRED) {
+      throw new AppException(
+        ErrorCodes.FACE_NOT_RECOGNIZED,
+        'Xodim topilmadi yoki faol emas',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    const debounced = await this.getDebounce(employee.id);
+    if (debounced) {
+      return {
+        recognized: true as const,
+        duplicate: true as const,
+        employee: this.employeeSummary(employee),
+        event: { id: debounced.eventId, type: debounced.type, timestamp: debounced.timestamp },
+      };
+    }
+
+    const timezone = await this.companyTimezone(device.companyId);
+    const event = await this.saveEventAndRecalc({
+      employee,
+      branchId: device.branchId,
+      deviceId: device.id,
+      type,
+      source: AttendanceSource.KIOSK,
+      timestamp: new Date(),
+      confidence: pending.confidence,
+      livenessScore: pending.livenessScore,
+      snapshotUrl: pending.snapshotUrl,
+      timezone,
+    });
+
+    return {
+      recognized: true as const,
+      employee: this.employeeSummary(employee),
+      event: { id: event.id, type: event.type, timestamp: event.timestamp },
+      confidence: pending.confidence,
+      livenessScore: pending.livenessScore,
+    };
+  }
+
+  private kioskPendingKey(deviceId: string): string {
+    return `kiosk:manual:pending:${deviceId}`;
   }
 
   // ================= MOBILE =================

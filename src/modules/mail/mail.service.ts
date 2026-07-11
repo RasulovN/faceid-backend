@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import {
+  companyApprovedTemplate,
   employeeCredentialsTemplate,
   leadApprovedTemplate,
   leadRejectedTemplate,
@@ -169,6 +170,20 @@ export class MailService {
       to,
       'FaceID — Obuna bekor qilindi',
       subscriptionCancelledTemplate(companyName, tariffName, payUrl),
+    );
+  }
+
+  /** Superadmin PENDING kompaniyani tasdiqlaganda — trial obuna faollashdi xati */
+  async sendCompanyApproved(to: string, companyName: string, trialEndsAt: Date | null): Promise<void> {
+    const loginUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/login`;
+    await this.send(
+      to,
+      'FaceID — Kompaniyangiz tasdiqlandi',
+      companyApprovedTemplate(
+        companyName,
+        trialEndsAt ? trialEndsAt.toISOString().slice(0, 10) : null,
+        loginUrl,
+      ),
     );
   }
 

@@ -13,6 +13,13 @@ import {
 import { AttendanceEventType, AttendanceSource } from '../../../common/enums';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 
+/** Qo'lda rejim 2-bosqich: tanilgan xodim uchun yo'nalish tasdiqlash */
+export class KioskConfirmDto {
+  @ApiProperty({ enum: AttendanceEventType })
+  @IsIn(Object.values(AttendanceEventType))
+  direction: AttendanceEventType;
+}
+
 export class EventsQueryDto extends PaginationDto {
   @ApiPropertyOptional()
   @IsOptional()

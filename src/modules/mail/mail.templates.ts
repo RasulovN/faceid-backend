@@ -166,6 +166,29 @@ export function subscriptionCancelledTemplate(
   );
 }
 
+export function companyApprovedTemplate(
+  companyName: string,
+  trialEndsAt: string | null,
+  loginUrl: string,
+): string {
+  return layout(
+    'Kompaniyangiz tasdiqlandi 🎉',
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">Kompaniyangiz administrator tomonidan <b style="color:#059669;">tasdiqlandi</b> va bepul sinov obunasi faollashtirildi. Endi FaceID tizimidan to‘liq foydalanishingiz mumkin.</p>
+     ${
+       trialEndsAt
+         ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;width:100%;">
+       <tr><td style="padding:16px 20px;">
+         <div style="font-size:13px;color:#6b7280;">Bepul sinov muddati</div>
+         <div style="font-size:20px;color:#059669;font-weight:700;">${trialEndsAt} gacha</div>
+       </td></tr>
+     </table>`
+         : ''
+     }
+     ${button(loginUrl, 'Tizimga kirish')}`,
+  );
+}
+
 export function leadApprovedTemplate(name: string, registerUrl: string): string {
   return layout(
     'Murojaatingiz tasdiqlandi 🎉',

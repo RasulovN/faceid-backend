@@ -19,12 +19,12 @@ export class User {
   username: string;
 
   @Index('UQ_users_email', { unique: true })
-  @Column({ type: 'varchar', length: 255 })
-  email: string;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  email: string | null;
 
   @Index('UQ_users_phone', { unique: true })
-  @Column({ type: 'varchar', length: 20 })
-  phone: string;
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  phone: string | null;
 
   @Column({ type: 'varchar', length: 255 })
   passwordHash: string;

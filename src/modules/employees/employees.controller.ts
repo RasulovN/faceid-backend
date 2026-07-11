@@ -9,10 +9,12 @@ import {
   Post,
   Query,
   Req,
+  Res,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { FastifyRequest } from 'fastify';
+import { FastifyReply, FastifyRequest } from 'fastify';
 import { EmployeesService } from './employees.service';
+import { EmployeesImportService } from './employees-import.service';
 import {
   CreateEmployeeDto,
   EmployeeAttendanceQueryDto,
@@ -20,7 +22,7 @@ import {
   UpdateEmployeeDto,
   UpdateEmployeeStatusDto,
 } from './dto/employee.dtos';
-import { CurrentUser, Permissions, RequestUser } from '../../common/decorators';
+import { CurrentUser, Permissions, RequestUser, SkipEnvelope } from '../../common/decorators';
 import { PERMISSIONS, roleHasPermission } from '../../common/constants/permissions';
 import { UserRole } from '../../common/enums';
 import { AppException } from '../../common/exceptions/app.exception';
@@ -30,7 +32,10 @@ import { parseMultipart } from '../../common/utils/multipart.util';
 @ApiBearerAuth()
 @Controller('employees')
 export class EmployeesController {
-  constructor(private readonly employeesService: EmployeesService) {}
+  constructor(
+    private readonly employeesService: EmployeesService,
+    private readonly importService: EmployeesImportService,
+  ) {}
 
   @Get()
   @Permissions(PERMISSIONS.EMPLOYEES_READ)
@@ -43,6 +48,32 @@ export class EmployeesController {
   @ApiOperation({ summary: 'Xodim yaratish (User + Employee bitta tranzaksiyada)' })
   async create(@CurrentUser() user: RequestUser, @Body() dto: CreateEmployeeDto) {
     return this.employeesService.create(user.companyId!, dto);
+  }
+
+  @Get('import/template')
+  @Permissions(PERMISSIONS.EMPLOYEES_CREATE)
+  @SkipEnvelope()
+  @ApiOperation({ summary: 'Xodimlarni ommaviy import qilish uchun Excel shablon (.xlsx)' })
+  async importTemplate(@CurrentUser() user: RequestUser, @Res() reply: FastifyReply) {
+    const buffer = await this.importService.buildTemplate(user.companyId!);
+    void reply
+      .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      .header('Content-Disposition', 'attachment; filename="xodimlar-shablon.xlsx"')
+      .send(buffer);
+  }
+
+  @Post('import')
+  @Permissions(PERMISSIONS.EMPLOYEES_CREATE)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: "Excel (.xlsx) fayldan xodimlarni ommaviy import qilish — har qator bo'yicha natija",
+  })
+  async import(@CurrentUser() user: RequestUser, @Req() req: FastifyRequest) {
+    const { files } = await parseMultipart(req, { maxFiles: 1, imagesOnly: false });
+    if (files.length === 0) {
+      throw AppException.validation('Excel (.xlsx) fayl biriktiring');
+    }
+    return this.importService.import(user.companyId!, files[0]);
   }
 
   @Get(':id')

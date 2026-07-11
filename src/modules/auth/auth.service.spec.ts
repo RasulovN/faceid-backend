@@ -52,6 +52,7 @@ describe('AuthService', () => {
       { sendVerificationEmail: jest.fn(), sendPasswordResetEmail: jest.fn() } as any, // mailService
       { seedDefaultRoles: jest.fn() } as any, // rolesService
       { seedDefaultRules: jest.fn() } as any, // rulesService
+      { seedDefaults: jest.fn() } as any, // schedulesService
       { track: jest.fn() } as any, // usageTracker
     );
   });
@@ -105,6 +106,7 @@ describe('AuthService', () => {
         role: UserRole.COMPANY_OWNER,
         companyId: 'c1',
         isActive: true,
+        isEmailVerified: true,
         passwordHash: await argon2.hash('Demo123!'),
       } as unknown as User;
       userRepository.findOne.mockResolvedValue(user);

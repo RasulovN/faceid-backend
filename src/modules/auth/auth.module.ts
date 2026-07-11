@@ -11,6 +11,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { RolesModule } from '../roles/roles.module';
 import { RulesModule } from '../rules/rules.module';
+import { SchedulesModule } from '../schedules/schedules.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { RulesModule } from '../rules/rules.module';
     TypeOrmModule.forFeature([User, Company, Employee, Subscription, Tariff, Role]),
     RolesModule,
     RulesModule,
+    SchedulesModule,
   ],
   controllers: [AuthController],
   providers: [AuthService],

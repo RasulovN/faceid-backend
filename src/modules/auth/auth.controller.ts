@@ -8,7 +8,9 @@ import {
   LoginDto,
   RefreshDto,
   RegisterDto,
+  ResendVerificationDto,
   ResetPasswordDto,
+  UpdateProfileDto,
   VerifyEmailDto,
 } from './dto/auth.dtos';
 import { CurrentUser, Public, RequestUser, SkipAudit } from '../../common/decorators';
@@ -69,6 +71,16 @@ export class AuthController {
     return this.authService.verifyEmail(dto);
   }
 
+  @Post('resend-verification')
+  @Public()
+  @SkipAudit()
+  @HttpCode(200)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Email tasdiqlash havolasini qayta yuborish' })
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerification(dto);
+  }
+
   @Post('forgot-password')
   @Public()
   @SkipAudit()
@@ -86,6 +98,13 @@ export class AuthController {
   @ApiOperation({ summary: 'Yangi parol o‘rnatish (token bilan)' })
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto);
+  }
+
+  @Patch('profile')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'O‘z profilini yangilash (username/email/telefon)' })
+  async updateProfile(@CurrentUser() user: RequestUser, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(user.id, dto);
   }
 
   @Patch('change-password')

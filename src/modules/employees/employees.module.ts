@@ -10,6 +10,7 @@ import { WorkDay } from '../../entities/work-day.entity';
 import { WorkSchedule } from '../../entities/work-schedule.entity';
 import { EmployeesController } from './employees.controller';
 import { EmployeesService } from './employees.service';
+import { EmployeesImportService } from './employees-import.service';
 
 @Module({
   imports: [
@@ -25,7 +26,7 @@ import { EmployeesService } from './employees.service';
     ]),
   ],
   controllers: [EmployeesController],
-  providers: [EmployeesService],
+  providers: [EmployeesService, EmployeesImportService],
   exports: [EmployeesService],
 })
 export class EmployeesModule {}

@@ -1,7 +1,8 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
   IsNotEmpty,
+  IsOptional,
   IsString,
   Matches,
   MaxLength,
@@ -80,6 +81,13 @@ export class VerifyEmailDto {
   token: string;
 }
 
+export class ResendVerificationDto {
+  @ApiProperty({ description: 'username YOKI email YOKI +998 telefon', example: 'aziz@example.com' })
+  @IsString()
+  @IsNotEmpty()
+  identifier: string;
+}
+
 export class ForgotPasswordDto {
   @ApiProperty()
   @IsEmail()
@@ -97,6 +105,28 @@ export class ResetPasswordDto {
   @MinLength(8)
   @MaxLength(128)
   password: string;
+}
+
+export class UpdateProfileDto {
+  @ApiPropertyOptional({ example: 'aziz' })
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(64)
+  @Matches(/^[a-zA-Z0-9._-]+$/, {
+    message: 'Username faqat lotin harflari, raqam va . _ - belgilaridan iborat bo‘lishi mumkin',
+  })
+  username?: string;
+
+  @ApiPropertyOptional({ example: 'aziz@example.com' })
+  @IsOptional()
+  @IsEmail({}, { message: 'Email manzil noto‘g‘ri' })
+  email?: string;
+
+  @ApiPropertyOptional({ example: '+998901234567' })
+  @IsOptional()
+  @Matches(PHONE_REGEX, { message: PHONE_MESSAGE })
+  phone?: string;
 }
 
 export class ChangePasswordDto {

@@ -1,8 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, MoreThan, Repository } from 'typeorm';
+import { DataSource, IsNull, MoreThan, Not, Repository } from 'typeorm';
 import * as argon2 from 'argon2';
 import { Company } from '../../entities/company.entity';
 import { Employee } from '../../entities/employee.entity';
@@ -11,6 +11,7 @@ import { Subscription } from '../../entities/subscription.entity';
 import { Tariff } from '../../entities/tariff.entity';
 import { User } from '../../entities/user.entity';
 import { AppException } from '../../common/exceptions/app.exception';
+import { ErrorCodes } from '../../common/constants/error-codes';
 import { CompanyStatus, SubscriptionStatus, UserRole } from '../../common/enums';
 import { ROLE_PERMISSIONS } from '../../common/constants/permissions';
 import { generateUrlToken } from '../../common/utils/crypto.util';
@@ -18,6 +19,7 @@ import { slugify, slugWithSuffix } from '../../common/utils/slug.util';
 import { MailService } from '../mail/mail.service';
 import { RolesService } from '../roles/roles.service';
 import { RulesService } from '../rules/rules.service';
+import { SchedulesService } from '../schedules/schedules.service';
 import { UsageTrackerService } from '../usage/usage-tracker.service';
 import {
   ChangePasswordDto,
@@ -25,7 +27,9 @@ import {
   LoginDto,
   RefreshDto,
   RegisterDto,
+  ResendVerificationDto,
   ResetPasswordDto,
+  UpdateProfileDto,
   VerifyEmailDto,
 } from './dto/auth.dtos';
 
@@ -53,6 +57,7 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly rolesService: RolesService,
     private readonly rulesService: RulesService,
+    private readonly schedulesService: SchedulesService,
     private readonly usageTracker: UsageTrackerService,
   ) {}
 
@@ -79,7 +84,8 @@ export class AuthService {
   async register(dto: RegisterDto) {
     await this.assertUserUnique(dto.username, dto.email, dto.phone);
 
-    const autoApprove = this.config.get<string>('AUTO_APPROVE_COMPANIES') !== 'false';
+    // Default: superadmin tasdiqlaguncha kompaniya PENDING (bepul trial berilmaydi)
+    const autoApprove = this.config.get<string>('AUTO_APPROVE_COMPANIES') === 'true';
     const trialDays = Number(this.config.get('TRIAL_DAYS') ?? 14);
     const passwordHash = await argon2.hash(dto.password);
     const verificationToken = generateUrlToken();
@@ -143,12 +149,13 @@ export class AuthService {
       return { user, company };
     });
 
-    // Yangi kompaniyaga default (isSystem) rollarni seed qilamiz.
+    // Yangi kompaniyaga default (isSystem) rollar, qoidalar va grafiklarni seed qilamiz.
     await this.rolesService.seedDefaultRoles(result.company.id);
     await this.rulesService.seedDefaultRules(result.company.id);
+    await this.schedulesService.seedDefaults(result.company.id);
 
     await this.mailService.sendVerificationEmail(
-      result.user.email,
+      dto.email.toLowerCase(),
       `${dto.firstName} ${dto.lastName}`,
       verificationToken,
     );
@@ -171,6 +178,14 @@ export class AuthService {
     }
     if (!user.isActive) {
       throw AppException.forbidden('Hisobingiz faol emas. Administrator bilan bog‘laning');
+    }
+    // Kompaniya egasi email tasdiqlamaguncha kira olmaydi
+    if (user.role === UserRole.COMPANY_OWNER && !user.isEmailVerified) {
+      throw new AppException(
+        ErrorCodes.EMAIL_NOT_VERIFIED,
+        'Email manzilingiz hali tasdiqlanmagan. Emailingizga yuborilgan havola orqali tasdiqlang',
+        HttpStatus.FORBIDDEN,
+      );
     }
 
     user.lastLoginAt = new Date();
@@ -258,15 +273,34 @@ export class AuthService {
     return { ok: true };
   }
 
+  async resendVerification(dto: ResendVerificationDto) {
+    const { kind, value } = this.detectIdentifier(dto.identifier);
+    const user = await this.userRepository.findOne({
+      where: {
+        [kind === 'phone' ? 'phone' : kind]: kind === 'username' ? value.toLowerCase() : value,
+        deletedAt: IsNull(),
+      },
+    });
+    if (user && user.isActive && !user.isEmailVerified && user.email) {
+      const email = user.email;
+      user.emailVerificationToken = generateUrlToken();
+      await this.userRepository.save(user);
+      await this.mailService.sendVerificationEmail(email, user.username, user.emailVerificationToken);
+    }
+    // Hisob mavjudligini oshkor qilmaymiz
+    return { ok: true };
+  }
+
   async forgotPassword(dto: ForgotPasswordDto) {
     const user = await this.userRepository.findOne({
       where: { email: dto.email.toLowerCase(), deletedAt: IsNull() },
     });
-    if (user && user.isActive) {
+    if (user && user.isActive && user.email) {
+      const email = user.email;
       user.passwordResetToken = generateUrlToken();
       user.passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
       await this.userRepository.save(user);
-      await this.mailService.sendPasswordResetEmail(user.email, user.username, user.passwordResetToken);
+      await this.mailService.sendPasswordResetEmail(email, user.username, user.passwordResetToken);
     }
     // Email mavjudligini oshkor qilmaymiz
     return { ok: true };
@@ -283,6 +317,67 @@ export class AuthService {
     user.refreshTokenHash = null; // barcha sessiyalarni tugatamiz
     await this.userRepository.save(user);
     return { ok: true };
+  }
+
+  /**
+   * O'z profilini yangilash (username/email/telefon) — mobil ilova va panel uchun.
+   * Email o'zgarsa COMPANY_OWNER qayta tasdiqlashi kerak (login gate faqat ownerga tegishli).
+   */
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw AppException.unauthorized('Foydalanuvchi topilmadi');
+
+    const username = dto.username?.trim().toLowerCase() || undefined;
+    const email = dto.email?.trim().toLowerCase() || undefined;
+    const phone = dto.phone?.trim() || undefined;
+
+    const conflicts: string[] = [];
+    if (
+      username &&
+      username !== user.username &&
+      (await this.userRepository.exists({ where: { username, id: Not(userId) } }))
+    ) {
+      conflicts.push('username');
+    }
+    if (
+      email &&
+      email !== user.email &&
+      (await this.userRepository.exists({ where: { email, id: Not(userId) } }))
+    ) {
+      conflicts.push('email');
+    }
+    if (
+      phone &&
+      phone !== user.phone &&
+      (await this.userRepository.exists({ where: { phone, id: Not(userId) } }))
+    ) {
+      conflicts.push('phone');
+    }
+    if (conflicts.length > 0) {
+      throw AppException.conflict(`Quyidagi maydonlar allaqachon band: ${conflicts.join(', ')}`, {
+        fields: conflicts,
+      });
+    }
+
+    const emailChanged = email !== undefined && email !== user.email;
+    if (username) user.username = username;
+    if (email) user.email = email;
+    if (phone) user.phone = phone;
+
+    if (emailChanged && user.role === UserRole.COMPANY_OWNER) {
+      // Owner yangi emailni tasdiqlamaguncha keyingi loginlar bloklanadi
+      user.isEmailVerified = false;
+      user.emailVerificationToken = generateUrlToken();
+    }
+    await this.userRepository.save(user);
+    if (emailChanged && user.role === UserRole.COMPANY_OWNER && user.email) {
+      await this.mailService.sendVerificationEmail(
+        user.email,
+        user.username,
+        user.emailVerificationToken!,
+      );
+    }
+    return this.toPublicUser(user);
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {

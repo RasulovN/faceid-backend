@@ -23,6 +23,7 @@ import {
   EventsQueryDto,
   ExcuseDayDto,
   ExportQueryDto,
+  KioskConfirmDto,
   ManualEventDto,
   MonthlyQueryDto,
   StatsQueryDto,
@@ -39,7 +40,7 @@ import {
   SkipEnvelope,
 } from '../../common/decorators';
 import { PERMISSIONS } from '../../common/constants/permissions';
-import { AttendanceEventType, UserRole } from '../../common/enums';
+import { AttendanceEventType, DeviceDirection, UserRole } from '../../common/enums';
 import { Device } from '../../entities/device.entity';
 import { DeviceTokenGuard } from '../../common/guards/device-token.guard';
 import { AppException } from '../../common/exceptions/app.exception';
@@ -67,7 +68,18 @@ export class AttendanceController {
   async kioskRecognize(@CurrentDevice() device: Device, @Req() req: FastifyRequest) {
     const { files, fields } = await parseMultipart(req, { maxFiles: 1, imagesOnly: true });
     if (files.length === 0) throw AppException.validation('`frame` fayli yuborilmagan');
-    // Qo'lda rejim: kiosk xodim bosgan tugma yo'nalishini yuboradi.
+    // QO'LDA REJIM 1-bosqich: phase=identify — faqat tanish, event yozilmaydi
+    // (tugma keyin /kiosk/confirm bilan bosiladi). Faqat manualMode+BOTH
+    // qurilmada ma'noli; boshqa konfiguratsiyada oddiy recognize'ga tushadi.
+    if (
+      fields['phase'] === 'identify' &&
+      device.manualMode &&
+      device.direction === DeviceDirection.BOTH
+    ) {
+      return this.attendanceService.kioskIdentify(device, files[0].buffer);
+    }
+    // Qo'lda rejim (legacy oqim / oflayn navbat): kiosk xodim bosgan tugma
+    // yo'nalishini kadr bilan birga yuboradi.
     // Faqat ruxsat etilgan qiymatlar qabul qilinadi, aks holda e'tiborsiz.
     const rawDirection = fields['direction'];
     const requestedType =
@@ -75,6 +87,20 @@ export class AttendanceController {
         ? (rawDirection as AttendanceEventType)
         : undefined;
     return this.attendanceService.kioskRecognize(device, files[0].buffer, requestedType);
+  }
+
+  @Post('kiosk/confirm')
+  @DeviceAuth()
+  @UseGuards(DeviceTokenGuard)
+  @SkipThrottle()
+  @SkipAudit()
+  @HttpCode(200)
+  @ApiHeader({ name: 'X-Device-Token', required: true })
+  @ApiOperation({
+    summary: "Qo'lda rejim 2-bosqich: tanilgan xodim uchun Kirish/Chiqish tasdiqlash",
+  })
+  async kioskConfirm(@CurrentDevice() device: Device, @Body() dto: KioskConfirmDto) {
+    return this.attendanceService.kioskConfirm(device, dto.direction);
   }
 
   // ---------- Mobile ----------

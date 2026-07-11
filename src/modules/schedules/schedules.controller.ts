@@ -34,6 +34,12 @@ export class SchedulesController {
     return this.schedulesService.create(user.companyId!, dto);
   }
 
+  @Post('defaults')
+  @Permissions(PERMISSIONS.SCHEDULES_MANAGE)
+  async seedDefaults(@CurrentUser() user: RequestUser) {
+    return this.schedulesService.seedDefaults(user.companyId!);
+  }
+
   @Get(':id')
   @Permissions(PERMISSIONS.SCHEDULES_READ)
   async findOne(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {

@@ -128,12 +128,23 @@ export class DevicesService {
   }
 
   /** Kiosk kod bilan ulanadi (public) */
-  async pair(code: string) {
+  async pair(code: string, companySlug?: string) {
     const raw = await this.redis.get(this.pairKey(code));
     if (!raw) {
       throw AppException.notFound('Pairing kodi yaroqsiz yoki muddati tugagan');
     }
     const payload = JSON.parse(raw) as PairingPayload;
+    const company = await this.companyRepository.findOne({ where: { id: payload.companyId } });
+
+    // Kiosk kompaniya URL'idan (/:companySlug/kiosk) ochilgan bo'lsa — kod aynan
+    // shu kompaniyaniki bo'lishi shart. Mos kelmasa kod SARFLANMAYDI (claim'dan oldin).
+    if (companySlug && company && company.slug.toLowerCase() !== companySlug.trim().toLowerCase()) {
+      throw AppException.forbidden(
+        `Bu kod «${company.name}» kompaniyasiga tegishli. ` +
+          `Kiosk esa «${companySlug}» kompaniyasi manzilida ochilgan — o'z kompaniyangiz kodini kiriting.`,
+      );
+    }
+
     await this.tariffLimitsService.assertCanCreate(payload.companyId, 'device');
 
     // Atomik "claim": bir vaqtda kelgan bir nechta so'rovdan (masalan StrictMode
@@ -156,7 +167,6 @@ export class DevicesService {
       }),
     );
     const branch = await this.branchRepository.findOne({ where: { id: payload.branchId } });
-    const company = await this.companyRepository.findOne({ where: { id: payload.companyId } });
     this.wsService.emitDeviceStatus(payload.companyId, {
       deviceId: device.id,
       isActive: true,
@@ -174,7 +184,7 @@ export class DevicesService {
         direction: device.direction,
         manualMode: device.manualMode,
         branch: branch ? { id: branch.id, name: branch.name } : null,
-        company: company ? { id: company.id, name: company.name } : null,
+        company: company ? { id: company.id, name: company.name, slug: company.slug } : null,
       },
     };
   }

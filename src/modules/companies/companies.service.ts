@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Not, Repository } from 'typeorm';
 import { AttendanceEvent } from '../../entities/attendance-event.entity';
@@ -8,9 +9,11 @@ import { Device } from '../../entities/device.entity';
 import { Employee } from '../../entities/employee.entity';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
+import { Tariff } from '../../entities/tariff.entity';
 import { User } from '../../entities/user.entity';
 import { AppException } from '../../common/exceptions/app.exception';
-import { EmployeeStatus, PaymeState } from '../../common/enums';
+import { CompanyStatus, EmployeeStatus, PaymeState, SubscriptionStatus } from '../../common/enums';
+import { MailService } from '../mail/mail.service';
 import { Paginated } from '../../common/dto/pagination.dto';
 import {
   AdminUpdateCompanyDto,
@@ -29,8 +32,11 @@ export class CompaniesService {
     @InjectRepository(Subscription) private readonly subscriptionRepository: Repository<Subscription>,
     @InjectRepository(Payment) private readonly paymentRepository: Repository<Payment>,
     @InjectRepository(User) private readonly userRepository: Repository<User>,
+    @InjectRepository(Tariff) private readonly tariffRepository: Repository<Tariff>,
     @InjectRepository(AttendanceEvent)
     private readonly attendanceEventRepository: Repository<AttendanceEvent>,
+    private readonly config: ConfigService,
+    private readonly mailService: MailService,
   ) {}
 
   // ---------- Superadmin ----------
@@ -111,8 +117,49 @@ export class CompaniesService {
 
   async updateStatus(id: string, dto: UpdateCompanyStatusDto): Promise<Company> {
     const company = await this.getById(id);
+    const wasPending = company.status === CompanyStatus.PENDING;
     company.status = dto.status;
-    return this.companyRepository.save(company);
+
+    // Superadmin PENDING kompaniyani tasdiqlaganda — bepul trial obuna beriladi
+    if (wasPending && dto.status === CompanyStatus.ACTIVE && !company.tariffId) {
+      const trialTariff = await this.tariffRepository.findOne({
+        where: { isActive: true },
+        order: { sortOrder: 'ASC' },
+      });
+      if (trialTariff) {
+        const trialDays = Number(this.config.get('TRIAL_DAYS') ?? 14);
+        const now = new Date();
+        const trialEndsAt = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
+        company.tariffId = trialTariff.id;
+        company.subscriptionStartsAt = now;
+        company.subscriptionEndsAt = trialEndsAt;
+        await this.subscriptionRepository.save(
+          this.subscriptionRepository.create({
+            companyId: company.id,
+            tariffId: trialTariff.id,
+            startsAt: now,
+            endsAt: trialEndsAt,
+            status: SubscriptionStatus.ACTIVE,
+            isTrial: true,
+          }),
+        );
+      }
+    }
+
+    const saved = await this.companyRepository.save(company);
+
+    if (wasPending && dto.status === CompanyStatus.ACTIVE && company.ownerId) {
+      const owner = await this.userRepository.findOne({ where: { id: company.ownerId } });
+      if (owner?.email) {
+        await this.mailService.sendCompanyApproved(
+          owner.email,
+          company.name,
+          company.subscriptionEndsAt,
+        );
+      }
+    }
+
+    return saved;
   }
 
   async stats(id: string) {

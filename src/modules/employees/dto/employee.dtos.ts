@@ -19,20 +19,23 @@ import { EmployeeStatus, Gender, SalaryType } from '../../../common/enums';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class EmployeeCredentialsDto {
-  @ApiProperty()
+  @ApiPropertyOptional({ description: 'Bo‘sh qoldirilsa ism-familiyadan avto-generatsiya' })
+  @IsOptional()
   @IsString()
   @MinLength(3)
   @MaxLength(64)
   @Matches(/^[a-zA-Z0-9._-]+$/)
-  username: string;
+  username?: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({ description: 'Email yoki telefondan kamida bittasi majburiy' })
+  @IsOptional()
   @IsEmail()
-  email: string;
+  email?: string;
 
-  @ApiProperty({ example: '+998901234567' })
+  @ApiPropertyOptional({ example: '+998901234567' })
+  @IsOptional()
   @Matches(/^\+998\d{9}$/, { message: 'Telefon +998XXXXXXXXX formatida bo‘lishi kerak' })
-  phone: string;
+  phone?: string;
 
   @ApiPropertyOptional({ description: 'null bo‘lsa avtogeneratsiya + emailga yuboriladi' })
   @IsOptional()
@@ -83,11 +86,12 @@ export class CreateEmployeeDto {
   @MaxLength(150)
   department?: string;
 
-  @ApiProperty({ example: 'T-001' })
+  @ApiPropertyOptional({ example: 'T-001', description: 'Bo‘sh qoldirilsa navbatdagi raqam avto-generatsiya' })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
   @MaxLength(50)
-  tabNumber: string;
+  tabNumber?: string;
 
   @ApiProperty()
   @IsUUID()

@@ -69,6 +69,16 @@ class PairDto {
   @IsString()
   @Length(6, 6)
   code: string;
+
+  @ApiPropertyOptional({
+    example: 'demo',
+    description:
+      "Kiosk URL'idagi kompaniya slug'i (/:companySlug/kiosk). Berilsa kod aynan shu kompaniyaga tegishli bo'lishi shart",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  companySlug?: string;
 }
 
 class UpdateDeviceDto {
@@ -142,7 +152,7 @@ export class DevicesController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Kioskni kod bilan ulash → deviceToken' })
   async pair(@Body() dto: PairDto) {
-    return this.devicesService.pair(dto.code);
+    return this.devicesService.pair(dto.code, dto.companySlug);
   }
 
   @Post('heartbeat')
