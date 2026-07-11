@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Repository } from 'typeorm';
+import { ILike, IsNull, Repository } from 'typeorm';
 import { Branch } from '../../entities/branch.entity';
 import { Employee } from '../../entities/employee.entity';
 import { ScheduleDay, WorkSchedule } from '../../entities/work-schedule.entity';
@@ -63,8 +63,10 @@ export class SchedulesService {
   ) {}
 
   async findAll(companyId: string, query: PaginationDto) {
+    // Faqat shablonlar — legacy individual (employeeId'li) klonlar ro'yxatda ko'rinmaydi
+    const base = { companyId, employeeId: IsNull() };
     const [items, total] = await this.scheduleRepository.findAndCount({
-      where: query.search ? { companyId, name: ILike(`%${query.search}%`) } : { companyId },
+      where: query.search ? { ...base, name: ILike(`%${query.search}%`) } : base,
       order: { createdAt: 'DESC' },
       skip: query.skip,
       take: query.limit,

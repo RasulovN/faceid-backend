@@ -1,7 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, IsNull, Not, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, ILike, IsNull, Not, Repository } from 'typeorm';
 import { AttendanceEvent } from '../../entities/attendance-event.entity';
 import { Branch } from '../../entities/branch.entity';
 import { Company } from '../../entities/company.entity';
@@ -24,7 +24,10 @@ import {
 
 @Injectable()
 export class CompaniesService {
+  private readonly logger = new Logger(CompaniesService.name);
+
   constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(Company) private readonly companyRepository: Repository<Company>,
     @InjectRepository(Branch) private readonly branchRepository: Repository<Branch>,
     @InjectRepository(Employee) private readonly employeeRepository: Repository<Employee>,
@@ -160,6 +163,32 @@ export class CompaniesService {
     }
 
     return saved;
+  }
+
+  /**
+   * Kompaniyani BUTUNLAY o'chirish (superadmin).
+   * Kompaniya-scoped jadvallar (filial, xodim, qurilma, obuna, to'lov, grafik,
+   * rol, qoida va h.k.) FK CASCADE orqali o'chadi. `users.companyId` FK'si
+   * SET NULL bo'lgani uchun kompaniya userlari alohida o'chiriladi —
+   * aks holda ular "egasiz" holda tizimga kira olardi.
+   */
+  async remove(id: string): Promise<{ ok: boolean }> {
+    const company = await this.getById(id);
+    await this.dataSource.transaction(async (manager) => {
+      // Userlar ro'yxatini kompaniya o'chishidan OLDIN olamiz (keyin companyId NULL bo'ladi)
+      const users = await manager.getRepository(User).find({
+        where: { companyId: id },
+        select: { id: true },
+        withDeleted: true,
+      });
+      // Avval kompaniya — cascade employees'ni o'chiradi, so'ng userlarni o'chirish mumkin
+      await manager.getRepository(Company).delete({ id });
+      if (users.length > 0) {
+        await manager.getRepository(User).delete(users.map((u) => u.id));
+      }
+    });
+    this.logger.warn(`Kompaniya o'chirildi: ${company.name} (${id})`);
+    return { ok: true };
   }
 
   async stats(id: string) {

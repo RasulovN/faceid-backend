@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CompaniesService } from './companies.service';
 import { TariffLimitsService } from '../tariffs/tariff-limits.service';
@@ -54,6 +54,13 @@ export class CompaniesController {
   @Roles(UserRole.SUPERADMIN)
   async stats(@Param('id', ParseUUIDPipe) id: string) {
     return this.companiesService.stats(id);
+  }
+
+  @Delete('admin/companies/:id')
+  @Roles(UserRole.SUPERADMIN)
+  @ApiOperation({ summary: 'Kompaniyani butunlay o‘chirish (barcha ma‘lumotlari bilan)' })
+  async remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.companiesService.remove(id);
   }
 
   // ---------- Kompaniya profili ----------

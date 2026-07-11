@@ -45,9 +45,23 @@ export class WorkDayService {
   ) {}
 
   /**
-   * Amaldagi grafik: individual override > filial grafigi > filial workingHoursDefault
+   * Amaldagi grafik: xodimga biriktirilgan shablon (employees.scheduleId) >
+   * legacy individual override > filial grafigi > filial workingHoursDefault
    */
   async resolveSchedule(employee: Employee): Promise<EffectiveSchedule | null> {
+    if (employee.scheduleId) {
+      const assigned = await this.scheduleRepository.findOne({
+        where: { id: employee.scheduleId, companyId: employee.companyId },
+      });
+      if (assigned) {
+        return {
+          days: assigned.days,
+          gracePeriodMinutes: assigned.gracePeriodMinutes,
+          flexibleMinutes: assigned.flexibleMinutes ?? 0,
+        };
+      }
+    }
+    // Eski mexanizmdan qolgan individual klonlar (migratsiyadan o'tmagan bo'lsa)
     const individual = await this.scheduleRepository.findOne({
       where: { employeeId: employee.id, companyId: employee.companyId },
       order: { createdAt: 'DESC' },
@@ -184,9 +198,11 @@ export class WorkDayService {
       this.branchRepository.find({ where: { companyId } }),
     ]);
     // createdAt DESC — birinchi uchragani eng yangisi (resolveSchedule bilan bir xil)
+    const byId = new Map<string, ScheduleDay[]>();
     const individual = new Map<string, ScheduleDay[]>();
     const byBranch = new Map<string, ScheduleDay[]>();
     for (const s of schedules) {
+      byId.set(s.id, s.days);
       if (s.employeeId) {
         if (!individual.has(s.employeeId)) individual.set(s.employeeId, s.days);
       } else if (s.branchId) {
@@ -201,6 +217,8 @@ export class WorkDayService {
 
     return employees
       .filter((e) => {
+        const assigned = e.scheduleId ? byId.get(e.scheduleId) : undefined;
+        if (assigned) return worksToday(assigned);
         const ind = individual.get(e.id);
         if (ind) return worksToday(ind);
         const br = byBranch.get(e.branchId);

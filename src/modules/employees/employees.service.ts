@@ -3,7 +3,6 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
   DataSource,
-  EntityManager,
   FindOptionsWhere,
   ILike,
   IsNull,
@@ -83,7 +82,7 @@ export class EmployeesService {
       : [base];
     const [items, total] = await this.employeeRepository.findAndCount({
       where,
-      relations: { branch: true, user: true },
+      relations: { branch: true, user: true, schedule: true },
       order: { createdAt: 'DESC' },
       skip: query.skip,
       take: query.limit,
@@ -95,7 +94,7 @@ export class EmployeesService {
   async findOne(companyId: string, id: string) {
     const employee = await this.employeeRepository.findOne({
       where: { id, companyId, deletedAt: IsNull() },
-      relations: { branch: true, user: true },
+      relations: { branch: true, user: true, schedule: true },
     });
     if (!employee) throw AppException.notFound('Xodim topilmadi');
     return this.present(employee, true);
@@ -136,6 +135,8 @@ export class EmployeesService {
       throw AppException.conflict(`Tab raqami "${tabNumber}" allaqachon band`);
     }
 
+    if (dto.scheduleId) await this.assertScheduleExists(companyId, dto.scheduleId);
+
     const generatedPassword = dto.credentials.password ? null : generatePassword(12);
     const password = dto.credentials.password ?? generatedPassword!;
     const passwordHash = await argon2.hash(password);
@@ -168,14 +169,11 @@ export class EmployeesService {
           hiredAt: dto.hiredAt ?? null,
           salaryType: dto.salaryType,
           salaryAmount: dto.salaryAmount,
+          scheduleId: dto.scheduleId ?? null,
           passportSeries: dto.passportSeries ?? null,
           notes: dto.notes ?? null,
         }),
       );
-
-      if (dto.scheduleId) {
-        await this.applyIndividualSchedule(manager, companyId, created, dto.scheduleId);
-      }
 
       return created;
     });
@@ -212,16 +210,18 @@ export class EmployeesService {
     }
     const { scheduleId, ...fields } = dto;
     Object.assign(employee, fields);
+    if (scheduleId !== undefined) {
+      // null → grafik uzib qo'yiladi; uuid → shablonga to'g'ridan-to'g'ri havola
+      if (scheduleId) await this.assertScheduleExists(companyId, scheduleId);
+      employee.scheduleId = scheduleId ?? null;
+    }
     await this.dataSource.transaction(async (manager) => {
       await manager.getRepository(Employee).save(employee);
       if (scheduleId !== undefined) {
-        // null → individual override olib tashlanadi; uuid → yangi override
+        // Eski mexanizmdan qolgan individual klon-grafiklarni tozalaymiz
         await manager
           .getRepository(WorkSchedule)
           .delete({ companyId, employeeId: employee.id });
-        if (scheduleId) {
-          await this.applyIndividualSchedule(manager, companyId, employee, scheduleId);
-        }
       }
     });
     return this.findOne(companyId, id);
@@ -392,28 +392,11 @@ export class EmployeesService {
     return employee;
   }
 
-  private async applyIndividualSchedule(
-    manager: EntityManager,
-    companyId: string,
-    employee: Employee,
-    scheduleId: string,
-  ): Promise<void> {
-    const schedule = await manager
-      .getRepository(WorkSchedule)
-      .findOne({ where: { id: scheduleId, companyId } });
-    if (!schedule) throw AppException.notFound('Ko‘rsatilgan ish grafigi topilmadi');
-    if (schedule.employeeId === employee.id) return; // allaqachon shu xodimniki
-    await manager.getRepository(WorkSchedule).save(
-      manager.getRepository(WorkSchedule).create({
-        companyId,
-        employeeId: employee.id,
-        branchId: null,
-        name: `${schedule.name} (${employee.firstName} ${employee.lastName})`,
-        type: schedule.type,
-        days: schedule.days,
-        gracePeriodMinutes: schedule.gracePeriodMinutes,
-      }),
-    );
+  private async assertScheduleExists(companyId: string, scheduleId: string): Promise<void> {
+    const exists = await this.scheduleRepository.exists({
+      where: { id: scheduleId, companyId },
+    });
+    if (!exists) throw AppException.notFound('Ko‘rsatilgan ish grafigi topilmadi');
   }
 
   private async present(employee: Employee, detail: boolean) {

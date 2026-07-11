@@ -14,6 +14,7 @@ import { EmployeeStatus, Gender, SalaryType } from '../common/enums';
 import { decryptString, encryptString } from '../common/utils/crypto.util';
 import { Branch } from './branch.entity';
 import { User } from './user.entity';
+import { WorkSchedule } from './work-schedule.entity';
 
 const bigintToNumber = { to: (v?: number | null) => v, from: (v?: string | null) => (v == null ? null : Number(v)) };
 
@@ -42,6 +43,15 @@ export class Employee {
   @OneToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'userId' })
   user?: User;
+
+  /** Biriktirilgan ish grafigi — shablonga to'g'ridan-to'g'ri havola (klonlanmaydi) */
+  @Index('IDX_employees_scheduleId')
+  @Column({ type: 'uuid', nullable: true })
+  scheduleId: string | null;
+
+  @ManyToOne(() => WorkSchedule, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'scheduleId' })
+  schedule?: WorkSchedule | null;
 
   @Column({ type: 'varchar', length: 100 })
   firstName: string;
