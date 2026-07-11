@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import {
   Between,
@@ -43,6 +44,10 @@ export interface PhotoUploadResult {
   quality: number | null;
   ok: boolean;
   errorCode?: string;
+  /** FACE_ALREADY_ENROLLED: bu yuz allaqachon biriktirilgan xodim */
+  duplicateOf?: { id: string; fullName: string } | null;
+  /** Dublikat aniqlanganda o'xshashlik darajasi (0..1) */
+  similarity?: number;
 }
 
 @Injectable()
@@ -60,6 +65,7 @@ export class EmployeesService {
     @InjectRepository(WorkSchedule)
     private readonly scheduleRepository: Repository<WorkSchedule>,
     @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
     private readonly faceService: FaceService,
     private readonly minioService: MinioService,
     private readonly mailService: MailService,
@@ -281,6 +287,24 @@ export class EmployeesService {
         });
         continue;
       }
+
+      // DUBLIKAT TEKSHIRUVI: bu yuz kompaniyada BOSHQA xodimga allaqachon
+      // biriktirilgan bo'lsa — rasm SAQLANMAYDI (bitta odam ikki xil nom
+      // bilan ro'yxatdan o'tib ketishining oldi olinadi).
+      const duplicate = await this.findDuplicateFace(companyId, employee.id, extraction.embedding);
+      if (duplicate) {
+        results.push({
+          embeddingId: null,
+          photoUrl: null,
+          quality: extraction.quality ?? null,
+          ok: false,
+          errorCode: 'FACE_ALREADY_ENROLLED',
+          duplicateOf: { id: duplicate.employeeId, fullName: duplicate.fullName },
+          similarity: duplicate.similarity,
+        });
+        continue;
+      }
+
       // MinIO kaliti embeddingId bilan nomlanadi — panel DELETE uchun URL'dan ID oladi
       const embeddingId = randomUUID();
       const extension = file.mimetype === 'image/png' ? 'png' : 'jpg';
@@ -309,6 +333,44 @@ export class EmployeesService {
 
     await this.employeeRepository.save(employee);
     return results;
+  }
+
+  /**
+   * Yangi embedding kompaniya ichida BOSHQA xodimning yuziga mos kelsa —
+   * dublikat (pgvector cosine, kiosk identify bilan bir xil o'lchov).
+   * FIRED va o'chirilgan xodimlar hisobga olinmaydi (qayta ishga olish holati),
+   * shuning uchun ular bilan to'qnashuv yangi yozuvni bloklamaydi.
+   */
+  private async findDuplicateFace(
+    companyId: string,
+    employeeId: string,
+    embedding: number[],
+  ): Promise<{ employeeId: string; fullName: string; similarity: number } | null> {
+    const threshold = Number(this.config.get('FACE_DUPLICATE_THRESHOLD') ?? 0.5);
+    const rows = await this.embeddingRepository.query(
+      `SELECT fe."employeeId"       AS "employeeId",
+              e."firstName"          AS "firstName",
+              e."lastName"           AS "lastName",
+              1 - (fe.embedding <=> $1::vector) AS similarity
+       FROM face_embeddings fe
+       JOIN employees e ON e.id = fe."employeeId"
+       WHERE e."companyId" = $2
+         AND e."deletedAt" IS NULL
+         AND e.status != 'FIRED'
+         AND fe."employeeId" != $3
+       ORDER BY fe.embedding <=> $1::vector
+       LIMIT 1`,
+      [`[${embedding.join(',')}]`, companyId, employeeId],
+    );
+    const row = rows[0] as
+      | { employeeId: string; firstName: string; lastName: string; similarity: string | number }
+      | undefined;
+    if (!row || Number(row.similarity) < threshold) return null;
+    return {
+      employeeId: row.employeeId,
+      fullName: [row.lastName, row.firstName].filter(Boolean).join(' '),
+      similarity: Number(row.similarity),
+    };
   }
 
   async removePhoto(companyId: string, id: string, embeddingId: string): Promise<{ ok: boolean }> {

@@ -14,6 +14,8 @@ export const ErrorCodes = {
   FACE_MULTIPLE: 'FACE_MULTIPLE',
   FACE_LOW_QUALITY: 'FACE_LOW_QUALITY',
   FACE_NOT_RECOGNIZED: 'FACE_NOT_RECOGNIZED',
+  /** Enroll: yuklangan rasmdagi yuz allaqachon BOSHQA xodimga biriktirilgan */
+  FACE_ALREADY_ENROLLED: 'FACE_ALREADY_ENROLLED',
   LIVENESS_FAILED: 'LIVENESS_FAILED',
   /** Aktiv liveness challenge (bosh burilishi/blink) bajarilmadi — transient */
   CHALLENGE_FAILED: 'CHALLENGE_FAILED',

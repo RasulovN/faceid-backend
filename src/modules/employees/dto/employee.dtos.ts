@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional, OmitType, PartialType } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
   IsEmail,
@@ -66,6 +66,7 @@ export class CreateEmployeeDto {
 
   @ApiPropertyOptional({ example: '1995-04-12' })
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsDateString()
   birthDate?: string;
 
@@ -99,6 +100,7 @@ export class CreateEmployeeDto {
 
   @ApiPropertyOptional({ example: '2026-01-01' })
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsDateString()
   hiredAt?: string;
 

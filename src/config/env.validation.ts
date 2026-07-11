@@ -61,6 +61,9 @@ export const envValidationSchema = Joi.object({
   FACE_SERVICE_URL: Joi.string().uri().default('http://localhost:8000'),
   INTERNAL_API_KEY: Joi.string().required(),
   FACE_MATCH_THRESHOLD: Joi.number().min(0).max(1).default(0.5),
+  // Enroll'da dublikat yuz tekshiruvi: shu o'xshashlikdan yuqori bo'lsa —
+  // rasm BOSHQA xodimga tegishli deb rad etiladi
+  FACE_DUPLICATE_THRESHOLD: Joi.number().min(0).max(1).default(0.5),
   LIVENESS_THRESHOLD: Joi.number().min(0).max(1).default(0.7),
   // Mobil burst verifikatsiyasida aktiv challenge: 'turn' (bosh burilishi) yoki 'none'
   FACE_CHALLENGE: Joi.string().valid('turn', 'none').default('turn'),
