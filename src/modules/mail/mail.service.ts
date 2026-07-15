@@ -12,6 +12,7 @@ import {
   subscriptionCancelledTemplate,
   subscriptionExpiringTemplate,
   subscriptionExtendedTemplate,
+  tariffChangedTemplate,
   verificationEmailTemplate,
 } from './mail.templates';
 
@@ -155,6 +156,31 @@ export class MailService {
         tariffName,
         endsAt.toISOString().slice(0, 10),
         panelUrl,
+      ),
+    );
+  }
+
+  /**
+   * Superadmin tarifni almashtirganda (temporary=false) yoki to'lovsiz so'rovni
+   * vaqtincha tasdiqlaganda (temporary=true)
+   */
+  async sendTariffChanged(
+    to: string,
+    companyName: string,
+    tariffName: string,
+    endsAt: Date,
+    temporary: boolean,
+  ): Promise<void> {
+    const panelUrl = `${this.config.getOrThrow<string>('CLIENT_URL')}/app/subscription`;
+    await this.send(
+      to,
+      temporary ? "FaceID — Tarif so'rovingiz tasdiqlandi" : "FaceID — Tarifingiz o'zgartirildi",
+      tariffChangedTemplate(
+        companyName,
+        tariffName,
+        endsAt.toISOString().slice(0, 10),
+        panelUrl,
+        temporary,
       ),
     );
   }

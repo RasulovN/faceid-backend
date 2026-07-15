@@ -46,11 +46,20 @@ Global guard zanjiri (tartib muhim): `ThrottlerGuard → JwtAuthGuard (@Public i
 
 ```bash
 pnpm install            # dependencylar
-pnpm start:dev          # dev server (watch)
+pnpm start:dev          # dev server (watch) + face-service (uvicorn) avto-start
+pnpm start:dev:solo     # faqat backend (face-service'siz)
 pnpm build              # production build
 pnpm start:prod         # dist/main.js
 pnpm lint               # ESLint
 pnpm test               # Jest (61 test)
+```
+
+`start:dev` face-service'ni ham avtomatik ko'taradi (`scripts/dev-with-face.mjs`):
+allaqachon ishlayotgan bo'lsa qayta ochmaydi, `face-service/.venv` bo'lmasa
+ogohlantirib faqat backend'ni ishga tushiradi. O'chirish:
+`FACE_SERVICE_AUTOSTART=false pnpm start:dev` (yoki `pnpm start:dev:solo`).
+
+```bash
 pnpm seed               # superadmin + 3 tarif + demo kompaniya
 ```
 

@@ -17,6 +17,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
@@ -147,11 +148,11 @@ class AdminSubscriptionsQueryDto extends PaginationDto {
 }
 
 class AdminSubscriptionActionDto {
-  @ApiProperty({ enum: ['extend', 'cancel'] })
-  @IsIn(['extend', 'cancel'])
+  @ApiProperty({ enum: ['extend', 'cancel', 'change_tariff', 'approve_request'] })
+  @IsIn(['extend', 'cancel', 'change_tariff', 'approve_request'])
   action: AdminSubscriptionAction;
 
-  @ApiPropertyOptional({ description: 'extend: necha oyga uzaytirish (kalendar oy)' })
+  @ApiPropertyOptional({ description: 'extend/change_tariff/approve_request: necha oy (kalendar oy)' })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -159,13 +160,30 @@ class AdminSubscriptionActionDto {
   @Max(36)
   months?: number;
 
-  @ApiPropertyOptional({ description: 'extend: necha kunga uzaytirish (months bilan qoʼshilishi mumkin)' })
+  @ApiPropertyOptional({ description: 'extend/change_tariff/approve_request: necha kun (months bilan qoʼshilishi mumkin)' })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(1096)
   days?: number;
+
+  @ApiPropertyOptional({ description: "change_tariff: yangi tarif ID (to'lovsiz almashtirish)" })
+  @IsOptional()
+  @IsUUID()
+  tariffId?: string;
+
+  @ApiPropertyOptional({ description: "approve_request: kutilayotgan to'lov (so'rov) ID" })
+  @IsOptional()
+  @IsUUID()
+  paymentId?: string;
+
+  @ApiPropertyOptional({
+    description: "true — joriy foydalanish yangi tarif limitidan oshsa ham almashtirilsin",
+  })
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
 }
 
 @ApiTags('payments')
@@ -361,7 +379,7 @@ export class PaymentsController {
   @Roles(UserRole.SUPERADMIN)
   @ApiOperation({
     summary:
-      "Obuna amali: extend (muddat ustiga qo'shish / qayta faollashtirish) yoki cancel (darhol bekor qilish)",
+      "Obuna amali: extend (muddat qo'shish), change_tariff (tarifni to'lovsiz almashtirish), approve_request (to'lanmagan so'rovni vaqtincha tasdiqlash) yoki cancel (darhol bekor qilish)",
   })
   async adminManageSubscription(
     @Param('id', ParseUUIDPipe) id: string,
@@ -370,6 +388,9 @@ export class PaymentsController {
     return this.subscriptionsService.adminManage(id, dto.action, {
       months: dto.months,
       days: dto.days,
+      tariffId: dto.tariffId,
+      paymentId: dto.paymentId,
+      force: dto.force,
     });
   }
 }

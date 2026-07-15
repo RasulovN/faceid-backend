@@ -166,6 +166,42 @@ export function subscriptionCancelledTemplate(
   );
 }
 
+/**
+ * Superadmin tarifni almashtirganda yoki to'lovsiz so'rovni vaqtincha tasdiqlaganda.
+ * temporary=true — to'lov hali qilinmagan, muddat vaqtinchalik ekani eslatiladi.
+ */
+export function tariffChangedTemplate(
+  companyName: string,
+  tariffName: string,
+  endsAt: string,
+  panelUrl: string,
+  temporary: boolean,
+): string {
+  return layout(
+    temporary ? "Tarif so'rovingiz tasdiqlandi ✅" : "Tarifingiz o'zgartirildi",
+    `<p style="font-size:15px;color:#374151;line-height:1.7;">Hurmatli <b>${companyName}</b> rahbariyati!</p>
+     <p style="font-size:15px;color:#374151;line-height:1.7;">${
+       temporary
+         ? "Siz so'ragan tarif administrator tomonidan <b style=\"color:#059669;\">to'lovsiz, vaqtincha</b> faollashtirildi:"
+         : 'Obunangiz administrator tomonidan yangi tarifga o‘tkazildi:'
+     }</p>
+     <table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;width:100%;">
+       <tr><td style="padding:16px 20px;">
+         <div style="font-size:13px;color:#6b7280;">Yangi tarif</div>
+         <div style="font-size:16px;color:#111827;font-weight:600;margin-bottom:12px;">${tariffName}</div>
+         <div style="font-size:13px;color:#6b7280;">Amal qilish muddati</div>
+         <div style="font-size:20px;color:#059669;font-weight:700;">${endsAt} gacha</div>
+       </td></tr>
+     </table>
+     ${
+       temporary
+         ? `<p style="font-size:14px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 16px;line-height:1.6;">Bu vaqtinchalik ruxsat — tizimdan uzluksiz foydalanish uchun ko‘rsatilgan muddatgacha to‘lovni amalga oshiring.</p>`
+         : ''
+     }
+     ${button(panelUrl, temporary ? "To'lovni amalga oshirish" : 'Obunani ko‘rish')}`,
+  );
+}
+
 export function companyApprovedTemplate(
   companyName: string,
   trialEndsAt: string | null,

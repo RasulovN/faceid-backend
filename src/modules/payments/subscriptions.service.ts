@@ -25,12 +25,21 @@ function addMonths(date: Date, months: number): Date {
   return result;
 }
 
-export type AdminSubscriptionAction = 'extend' | 'cancel';
+export type AdminSubscriptionAction = 'extend' | 'cancel' | 'change_tariff' | 'approve_request';
 
 export interface AdminSubscriptionActionOptions {
   months?: number;
   days?: number;
+  /** change_tariff: yangi tarif */
+  tariffId?: string;
+  /** approve_request: kutilayotgan to'lov (so'rov) */
+  paymentId?: string;
+  /** Limit tekshiruvini chetlab o'tish (usage yangi tarif limitidan oshsa ham) */
+  force?: boolean;
 }
+
+/** approve_request muddat berilmasa — default vaqtinchalik ruxsat (kun) */
+export const APPROVE_REQUEST_DEFAULT_DAYS = 7;
 
 export type AdminSubscriptionFilter = 'active' | 'expiring' | 'expired' | undefined;
 
@@ -66,6 +75,24 @@ function toPaymentDto(payment: Payment) {
     provider: payment.provider,
     createdAt: payment.createdAt,
     paidAt: payment.performTime,
+  };
+}
+
+/**
+ * Superadmin obunalar jadvalidagi "tarif so'rovi" DTO'si — kompaniyaning hali
+ * to'lanmagan (ochiq) checkout to'lovi. Superadmin uni to'lovsiz tasdiqlashi mumkin.
+ */
+function toPendingRequestDto(payment: Payment | undefined) {
+  if (!payment?.tariffId) return null;
+  return {
+    id: payment.id,
+    tariff: payment.tariff
+      ? { id: payment.tariff.id, name: payment.tariff.name }
+      : { id: payment.tariffId, name: '—' },
+    months: payment.months,
+    amount: payment.amount,
+    state: payment.state === PaymeState.CREATED ? ('CREATED' as const) : ('PENDING' as const),
+    createdAt: payment.createdAt,
   };
 }
 
@@ -473,6 +500,7 @@ export class SubscriptionsService {
     const companyMap = new Map(
       companies.map((c) => [c.id, { id: c.id, name: c.name, status: c.status }]),
     );
+    const requestMap = await this.findPendingRequests(companyIds);
 
     return Paginated.of(
       items.map((s) => ({
@@ -484,10 +512,31 @@ export class SubscriptionsService {
         status: s.status,
         isTrial: s.isTrial,
         daysLeft: Math.max(0, Math.ceil((s.endsAt.getTime() - Date.now()) / DAY_MS)),
+        pendingRequest: toPendingRequestDto(requestMap.get(s.companyId)),
       })),
       total,
       query,
     );
+  }
+
+  /** Har kompaniya uchun ENG SO'NGGI ochiq (to'lanmagan) tarifli to'lov — "so'rov" */
+  private async findPendingRequests(companyIds: string[]): Promise<Map<string, Payment>> {
+    const map = new Map<string, Payment>();
+    if (!companyIds.length) return map;
+    const openPayments = await this.paymentRepository.find({
+      where: {
+        companyId: In(companyIds),
+        state: In([PaymeState.PENDING, PaymeState.CREATED]),
+      },
+      relations: { tariff: true },
+      order: { createdAt: 'DESC' },
+    });
+    for (const payment of openPayments) {
+      if (payment.tariffId && !map.has(payment.companyId)) {
+        map.set(payment.companyId, payment);
+      }
+    }
+    return map;
   }
 
   /**
@@ -495,6 +544,10 @@ export class SubscriptionsService {
    * - extend: faol obunada muddat MAVJUD tugash sanasi USTIGA qo'shiladi; tugagan/bekor
    *   qilingan obunada bugundan qayta boshlanadi. Har ikkala holatda obuna va kompaniya
    *   ACTIVE ga qaytadi (uzaytirish = qayta faollashtirish).
+   * - change_tariff: tarif TO'LOVSIZ almashtiriladi (faqat superadmin vakolati);
+   *   months/days berilsa muddat ham extend semantikasi bilan qo'shiladi.
+   * - approve_request: kompaniyaning ochiq (to'lanmagan) checkout so'rovidagi tarif
+   *   vaqtincha tasdiqlanadi — to'lov keyin amalga oshirilsa odatdagidek ustiga qo'shiladi.
    * - cancel: darhol kuchga kiradi — obuna CANCELLED, kompaniya qolgan eng so'nggi faol
    *   obunaga sinxronlanadi, bo'lmasa EXPIRED (payme rollbackSubscription bilan bir xil naqsh).
    * Egaga in-app bildirishnoma + contactEmail'ga brendli email yuboriladi (xato yutiladi).
@@ -513,6 +566,13 @@ export class SubscriptionsService {
       where: { id: subscription.companyId },
     });
     if (!company) throw AppException.notFound('Kompaniya topilmadi');
+
+    if (action === 'change_tariff') {
+      return this.adminChangeTariff(subscription, company, opts);
+    }
+    if (action === 'approve_request') {
+      return this.adminApproveRequest(subscription, company, opts);
+    }
 
     const now = new Date();
 
@@ -587,6 +647,163 @@ export class SubscriptionsService {
     return this.toAdminRow(subscription, company, companyStatus);
   }
 
+  /**
+   * Superadmin: tarifni TO'LOVSIZ almashtirish. Yangi tarif faol bo'lishi va joriy
+   * foydalanish limitlarga sig'ishi shart (force=true — ongli bypass). Muddat berilsa
+   * extend semantikasi bilan qo'shiladi va obuna qayta faollashadi.
+   */
+  private async adminChangeTariff(
+    subscription: Subscription,
+    company: Company,
+    opts: AdminSubscriptionActionOptions,
+  ) {
+    if (!opts.tariffId) {
+      throw AppException.validation("Yangi tarif tanlanmadi: 'tariffId' bering");
+    }
+    if (opts.tariffId === subscription.tariffId && !opts.months && !opts.days) {
+      throw AppException.validation('Obuna allaqachon shu tarifda');
+    }
+    const tariff = await this.tariffRepository.findOne({
+      where: { id: opts.tariffId, isActive: true },
+    });
+    if (!tariff) throw AppException.notFound('Tarif topilmadi yoki faol emas');
+    await this.assertUsageFitsTariff(company, tariff, opts.force);
+    return this.applyTariffGrant(
+      subscription,
+      company,
+      tariff,
+      { months: opts.months, days: opts.days },
+      'tariff_changed',
+    );
+  }
+
+  /**
+   * Superadmin: kompaniyaning ochiq (hali to'lanmagan) checkout so'rovini VAQTINCHA
+   * tasdiqlash — so'ralgan tarif to'lovsiz beriladi. Muddat berilmasa default
+   * APPROVE_REQUEST_DEFAULT_DAYS kun ruxsat beriladi. To'lov (payment) OCHIQ qoladi:
+   * kompaniya keyin to'lasa, payme aktivatsiyasi to'langan oylarni odatdagidek
+   * joriy muddat ustiga qo'shadi.
+   */
+  private async adminApproveRequest(
+    subscription: Subscription,
+    company: Company,
+    opts: AdminSubscriptionActionOptions,
+  ) {
+    if (!opts.paymentId) {
+      throw AppException.validation("So'rov tanlanmadi: 'paymentId' bering");
+    }
+    const payment = await this.paymentRepository.findOne({
+      where: { id: opts.paymentId, companyId: company.id },
+      relations: { tariff: true },
+    });
+    if (!payment) throw AppException.notFound("To'lov so'rovi topilmadi");
+    if (payment.state === PaymeState.PERFORMED) {
+      throw AppException.validation(
+        "Bu so'rov allaqachon to'langan — obuna to'lov orqali faollashgan",
+      );
+    }
+    if (payment.state < 0) {
+      throw AppException.validation("Bekor qilingan so'rovni tasdiqlab bo'lmaydi");
+    }
+    if (!payment.tariffId) {
+      throw AppException.validation("So'rovda tarif ko'rsatilmagan");
+    }
+    const tariff =
+      payment.tariff ??
+      (await this.tariffRepository.findOne({ where: { id: payment.tariffId } }));
+    if (!tariff?.isActive) {
+      throw AppException.validation("So'rovdagi tarif topilmadi yoki faol emas");
+    }
+    await this.assertUsageFitsTariff(company, tariff, opts.force);
+    const grant =
+      (opts.months ?? 0) > 0 || (opts.days ?? 0) > 0
+        ? { months: opts.months, days: opts.days }
+        : { days: APPROVE_REQUEST_DEFAULT_DAYS };
+    return this.applyTariffGrant(subscription, company, tariff, grant, 'request_approved');
+  }
+
+  /**
+   * Joriy foydalanish yangi tarif limitlariga sig'adimi? Custom tarifda limitlar
+   * kompaniyaning customLimits'idan olinadi (belgilanmagan bo'lsa xato).
+   * force=true — superadmin limitdan oshiqcha bilan ongli ravishda almashtiradi.
+   */
+  private async assertUsageFitsTariff(
+    company: Company,
+    tariff: Tariff,
+    force?: boolean,
+  ): Promise<void> {
+    if (tariff.isCustom && !company.customLimits) {
+      throw AppException.validation(
+        `"${tariff.name}" — moslashtiriladigan tarif: kompaniyada filial/xodim/qurilma miqdorlari (customLimits) belgilanmagan`,
+      );
+    }
+    if (force) return;
+    const caps = resolveEffectiveLimits(tariff, company);
+    const usage = await this.tariffLimits.getUsage(company.id);
+    const over = [
+      usage.branches > caps.branches ? `filial ${usage.branches}/${caps.branches}` : null,
+      usage.employees > caps.employees ? `xodim ${usage.employees}/${caps.employees}` : null,
+      usage.devices > caps.devices ? `qurilma ${usage.devices}/${caps.devices}` : null,
+    ].filter(Boolean);
+    if (over.length) {
+      throw AppException.validation(
+        `Joriy foydalanish "${tariff.name}" tarifi limitlaridan oshadi: ${over.join(', ')}. Baribir almashtirish uchun majburiy rejimni ('force') belgilang.`,
+        { over },
+      );
+    }
+  }
+
+  /**
+   * Obunaga tarif berish (to'lovsiz): tariffId almashtiriladi; months/days berilsa
+   * muddat extend semantikasi bilan qo'shiladi (faol obunada endsAt USTIGA, tugagan/
+   * bekor qilinganda bugundan) va obuna ACTIVE ga qaytadi. Obuna faol bo'lsa
+   * kompaniya unga sinxronlanadi.
+   */
+  private async applyTariffGrant(
+    subscription: Subscription,
+    company: Company,
+    tariff: Tariff,
+    grant: { months?: number; days?: number },
+    kind: 'tariff_changed' | 'request_approved',
+  ) {
+    const now = new Date();
+    subscription.tariffId = tariff.id;
+    subscription.tariff = tariff;
+
+    const months = grant.months ?? 0;
+    const days = grant.days ?? 0;
+    if (months > 0 || days > 0) {
+      const base =
+        subscription.status === SubscriptionStatus.ACTIVE && subscription.endsAt > now
+          ? subscription.endsAt
+          : now;
+      let endsAt = months > 0 ? addMonths(base, months) : new Date(base);
+      if (days > 0) endsAt = new Date(endsAt.getTime() + days * DAY_MS);
+      subscription.endsAt = endsAt;
+      subscription.status = SubscriptionStatus.ACTIVE;
+    }
+    await this.subscriptionRepository.save(subscription);
+
+    const isCurrent =
+      subscription.status === SubscriptionStatus.ACTIVE && subscription.endsAt > now;
+    let companyStatus = company.status;
+    if (isCurrent) {
+      companyStatus = CompanyStatus.ACTIVE;
+      await this.companyRepository.update(
+        { id: company.id },
+        {
+          status: CompanyStatus.ACTIVE,
+          tariffId: tariff.id,
+          subscriptionStartsAt: subscription.startsAt,
+          subscriptionEndsAt: subscription.endsAt,
+        },
+      );
+    }
+
+    await this.notifySubscriptionAction(company, subscription, kind);
+    return this.toAdminRow(subscription, company, companyStatus);
+  }
+
   /** adminSubscriptions ro'yxati bilan bir xil qator shakli */
   private toAdminRow(subscription: Subscription, company: Company, companyStatus: CompanyStatus) {
     return {
@@ -605,17 +822,18 @@ export class SubscriptionsService {
   private async notifySubscriptionAction(
     company: Company,
     subscription: Subscription,
-    kind: 'extended' | 'cancelled',
+    kind: 'extended' | 'cancelled' | 'tariff_changed' | 'request_approved',
   ): Promise<void> {
     try {
       const tariffName = subscription.tariff?.name ?? 'Obuna';
+      const endsAtStr = subscription.endsAt.toISOString().slice(0, 10);
       if (kind === 'extended') {
         if (company.ownerId) {
           await this.notificationsService.create(
             company.ownerId,
             'SUBSCRIPTION_EXTENDED',
             'Obuna uzaytirildi',
-            `"${tariffName}" tarifi bo'yicha obunangiz ${subscription.endsAt.toISOString().slice(0, 10)} gacha uzaytirildi.`,
+            `"${tariffName}" tarifi bo'yicha obunangiz ${endsAtStr} gacha uzaytirildi.`,
             { subscriptionId: subscription.id },
           );
         }
@@ -625,6 +843,44 @@ export class SubscriptionsService {
             company.name,
             tariffName,
             subscription.endsAt,
+          );
+        }
+      } else if (kind === 'tariff_changed') {
+        if (company.ownerId) {
+          await this.notificationsService.create(
+            company.ownerId,
+            'SUBSCRIPTION_TARIFF_CHANGED',
+            "Tarif o'zgartirildi",
+            `Obunangiz administrator tomonidan "${tariffName}" tarifiga o'tkazildi (amal qilish muddati: ${endsAtStr} gacha).`,
+            { subscriptionId: subscription.id },
+          );
+        }
+        if (company.contactEmail) {
+          await this.mailService.sendTariffChanged(
+            company.contactEmail,
+            company.name,
+            tariffName,
+            subscription.endsAt,
+            false,
+          );
+        }
+      } else if (kind === 'request_approved') {
+        if (company.ownerId) {
+          await this.notificationsService.create(
+            company.ownerId,
+            'SUBSCRIPTION_REQUEST_APPROVED',
+            "Tarif so'rovingiz tasdiqlandi",
+            `"${tariffName}" tarifi to'lovsiz, vaqtincha faollashtirildi — ${endsAtStr} gacha. Uzluksiz foydalanish uchun to'lovni amalga oshiring.`,
+            { subscriptionId: subscription.id },
+          );
+        }
+        if (company.contactEmail) {
+          await this.mailService.sendTariffChanged(
+            company.contactEmail,
+            company.name,
+            tariffName,
+            subscription.endsAt,
+            true,
           );
         }
       } else {

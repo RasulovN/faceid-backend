@@ -160,9 +160,16 @@ describe('SubscriptionsService.adminManage', () => {
 
   let service: SubscriptionsService;
   let subscriptionRepository: { findOne: jest.Mock; save: jest.Mock };
+  let paymentRepository: { findOne: jest.Mock };
+  let tariffRepository: { findOne: jest.Mock };
   let companyRepository: { findOne: jest.Mock; update: jest.Mock };
+  let tariffLimits: { getUsage: jest.Mock };
   let notifications: { create: jest.Mock };
-  let mail: { sendSubscriptionExtended: jest.Mock; sendSubscriptionCancelled: jest.Mock };
+  let mail: {
+    sendSubscriptionExtended: jest.Mock;
+    sendSubscriptionCancelled: jest.Mock;
+    sendTariffChanged: jest.Mock;
+  };
 
   function makeSub(overrides: Record<string, unknown> = {}) {
     return {
@@ -185,6 +192,20 @@ describe('SubscriptionsService.adminManage', () => {
       status: 'ACTIVE',
       ownerId: 'owner-1',
       contactEmail: 'owner@demo.uz',
+      customLimits: null,
+      ...overrides,
+    };
+  }
+
+  function makeTariff(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'tariff-2',
+      name: 'Business',
+      isActive: true,
+      isCustom: false,
+      maxBranches: 3,
+      maxEmployees: 50,
+      maxDevices: 3,
       ...overrides,
     };
   }
@@ -194,18 +215,27 @@ describe('SubscriptionsService.adminManage', () => {
       findOne: jest.fn(),
       save: jest.fn(async (s: unknown) => s),
     };
+    paymentRepository = { findOne: jest.fn() };
+    tariffRepository = { findOne: jest.fn(async () => makeTariff()) };
     companyRepository = {
       findOne: jest.fn(async () => makeCompany()),
       update: jest.fn(async () => ({ affected: 1 })),
     };
+    tariffLimits = {
+      getUsage: jest.fn(async () => ({ branches: 1, employees: 5, devices: 1 })),
+    };
     notifications = { create: jest.fn() };
-    mail = { sendSubscriptionExtended: jest.fn(), sendSubscriptionCancelled: jest.fn() };
+    mail = {
+      sendSubscriptionExtended: jest.fn(),
+      sendSubscriptionCancelled: jest.fn(),
+      sendTariffChanged: jest.fn(),
+    };
     service = new SubscriptionsService(
       subscriptionRepository as any,
-      {} as any, // paymentRepository
-      {} as any, // tariffRepository
+      paymentRepository as any,
+      tariffRepository as any,
       companyRepository as any,
-      {} as any, // tariffLimits
+      tariffLimits as any,
       { get: jest.fn() } as any,
       {} as any, // paymeConfig
       mail as any,
@@ -316,5 +346,213 @@ describe('SubscriptionsService.adminManage', () => {
   it('topilmagan obuna → notFound', async () => {
     subscriptionRepository.findOne.mockResolvedValue(null);
     await expect(service.adminManage(SUB_ID, 'extend', { days: 1 })).rejects.toThrow(/topilmadi/);
+  });
+
+  // ---------- change_tariff (tarifni to'lovsiz almashtirish) ----------
+
+  it('change_tariff: tarif almashadi, muddat berilmasa davr o‘z holicha qoladi', async () => {
+    const sub = makeSub();
+    const oldEnd = (sub.endsAt as Date).getTime();
+    subscriptionRepository.findOne.mockResolvedValue(sub);
+
+    const row = await service.adminManage(SUB_ID, 'change_tariff', { tariffId: 'tariff-2' });
+
+    expect(row.tariff).toMatchObject({ id: 'tariff-2', name: 'Business' });
+    expect(new Date(row.endsAt).getTime()).toBe(oldEnd);
+    expect(row.status).toBe('ACTIVE');
+    // Faol obuna — kompaniya yangi tarifga sinxronlanadi
+    expect(companyRepository.update).toHaveBeenCalledWith(
+      { id: COMPANY_ID },
+      expect.objectContaining({ status: 'ACTIVE', tariffId: 'tariff-2' }),
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'owner-1',
+      'SUBSCRIPTION_TARIFF_CHANGED',
+      expect.any(String),
+      expect.any(String),
+      expect.any(Object),
+    );
+    expect(mail.sendTariffChanged).toHaveBeenCalledWith(
+      'owner@demo.uz',
+      'Demo',
+      'Business',
+      expect.any(Date),
+      false,
+    );
+  });
+
+  it('change_tariff: muddat berilsa endsAt ustiga qo‘shiladi', async () => {
+    const sub = makeSub();
+    const oldEnd = (sub.endsAt as Date).getTime();
+    subscriptionRepository.findOne.mockResolvedValue(sub);
+
+    const row = await service.adminManage(SUB_ID, 'change_tariff', {
+      tariffId: 'tariff-2',
+      days: 10,
+    });
+
+    expect(new Date(row.endsAt).getTime()).toBe(oldEnd + 10 * DAY);
+  });
+
+  it('change_tariff: tugagan obunada tarif almashadi, kompaniya sinxronlanmaydi', async () => {
+    const sub = makeSub({ status: 'EXPIRED', endsAt: new Date(Date.now() - 5 * DAY) });
+    subscriptionRepository.findOne.mockResolvedValue(sub);
+    companyRepository.findOne.mockResolvedValue(makeCompany({ status: 'EXPIRED' }));
+
+    const row = await service.adminManage(SUB_ID, 'change_tariff', { tariffId: 'tariff-2' });
+
+    expect(row.tariff).toMatchObject({ id: 'tariff-2' });
+    expect(row.status).toBe('EXPIRED');
+    expect(companyRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('change_tariff: joriy foydalanish yangi tarif limitidan oshsa → validation xatosi', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    tariffLimits.getUsage.mockResolvedValue({ branches: 5, employees: 5, devices: 1 });
+
+    await expect(
+      service.adminManage(SUB_ID, 'change_tariff', { tariffId: 'tariff-2' }),
+    ).rejects.toThrow(/limitlaridan oshadi/);
+    expect(subscriptionRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('change_tariff: force=true limit tekshiruvini chetlab o‘tadi', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    tariffLimits.getUsage.mockResolvedValue({ branches: 5, employees: 5, devices: 1 });
+
+    const row = await service.adminManage(SUB_ID, 'change_tariff', {
+      tariffId: 'tariff-2',
+      force: true,
+    });
+    expect(row.tariff).toMatchObject({ id: 'tariff-2' });
+  });
+
+  it('change_tariff: bir xil tarif (muddatsiz) → xato', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    await expect(
+      service.adminManage(SUB_ID, 'change_tariff', { tariffId: 'tariff-1' }),
+    ).rejects.toThrow(/allaqachon shu tarifda/);
+  });
+
+  it('change_tariff: custom tarif + customLimits belgilanmagan → xato', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    tariffRepository.findOne.mockResolvedValue(makeTariff({ isCustom: true }));
+    await expect(
+      service.adminManage(SUB_ID, 'change_tariff', { tariffId: 'tariff-2' }),
+    ).rejects.toThrow(/customLimits/);
+  });
+
+  // ---------- approve_request (to'lanmagan so'rovni vaqtincha tasdiqlash) ----------
+
+  function makeRequestPayment(overrides: Partial<Payment> = {}): Payment {
+    return makePayment({
+      tariffId: 'tariff-2',
+      tariff: makeTariff() as any,
+      months: 3,
+      ...overrides,
+    });
+  }
+
+  it('approve_request: default — so‘ralgan tarif 7 kunga vaqtincha beriladi', async () => {
+    const sub = makeSub();
+    const oldEnd = (sub.endsAt as Date).getTime();
+    subscriptionRepository.findOne.mockResolvedValue(sub);
+    paymentRepository.findOne.mockResolvedValue(makeRequestPayment());
+
+    const row = await service.adminManage(SUB_ID, 'approve_request', { paymentId: PAY_ID });
+
+    expect(row.tariff).toMatchObject({ id: 'tariff-2', name: 'Business' });
+    expect(new Date(row.endsAt).getTime()).toBe(oldEnd + 7 * DAY);
+    expect(row.status).toBe('ACTIVE');
+    expect(paymentRepository.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: PAY_ID, companyId: COMPANY_ID } }),
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'owner-1',
+      'SUBSCRIPTION_REQUEST_APPROVED',
+      expect.any(String),
+      expect.any(String),
+      expect.any(Object),
+    );
+    expect(mail.sendTariffChanged).toHaveBeenCalledWith(
+      'owner@demo.uz',
+      'Demo',
+      'Business',
+      expect.any(Date),
+      true,
+    );
+  });
+
+  it('approve_request: months berilsa so‘ralgan muddat to‘liq beriladi', async () => {
+    const sub = makeSub();
+    const oldEnd = (sub.endsAt as Date).getTime();
+    subscriptionRepository.findOne.mockResolvedValue(sub);
+    paymentRepository.findOne.mockResolvedValue(makeRequestPayment());
+
+    const row = await service.adminManage(SUB_ID, 'approve_request', {
+      paymentId: PAY_ID,
+      months: 3,
+    });
+
+    const added = new Date(row.endsAt).getTime() - oldEnd;
+    expect(added).toBeGreaterThanOrEqual(89 * DAY); // ~3 kalendar oy
+    expect(added).toBeLessThanOrEqual(93 * DAY);
+  });
+
+  it('approve_request: tugagan obunada muddat bugundan boshlanadi va obuna faollashadi', async () => {
+    const sub = makeSub({ status: 'EXPIRED', endsAt: new Date(Date.now() - 5 * DAY) });
+    subscriptionRepository.findOne.mockResolvedValue(sub);
+    companyRepository.findOne.mockResolvedValue(makeCompany({ status: 'EXPIRED' }));
+    paymentRepository.findOne.mockResolvedValue(makeRequestPayment());
+
+    const before = Date.now();
+    const row = await service.adminManage(SUB_ID, 'approve_request', { paymentId: PAY_ID });
+
+    const endsAt = new Date(row.endsAt).getTime();
+    expect(endsAt).toBeGreaterThanOrEqual(before + 7 * DAY - 1000);
+    expect(endsAt).toBeLessThanOrEqual(Date.now() + 7 * DAY + 1000);
+    expect(row.status).toBe('ACTIVE');
+    expect(companyRepository.update).toHaveBeenCalledWith(
+      { id: COMPANY_ID },
+      expect.objectContaining({ status: 'ACTIVE', tariffId: 'tariff-2' }),
+    );
+  });
+
+  it('approve_request: to‘langan so‘rov tasdiqlanmaydi', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    paymentRepository.findOne.mockResolvedValue(
+      makeRequestPayment({ state: PaymeState.PERFORMED }),
+    );
+    await expect(
+      service.adminManage(SUB_ID, 'approve_request', { paymentId: PAY_ID }),
+    ).rejects.toThrow(/allaqachon to'langan/);
+  });
+
+  it('approve_request: bekor qilingan so‘rov tasdiqlanmaydi', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    paymentRepository.findOne.mockResolvedValue(
+      makeRequestPayment({ state: PaymeState.CANCELLED }),
+    );
+    await expect(
+      service.adminManage(SUB_ID, 'approve_request', { paymentId: PAY_ID }),
+    ).rejects.toThrow(/Bekor qilingan/);
+  });
+
+  it('approve_request: so‘rov topilmasa → notFound', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    paymentRepository.findOne.mockResolvedValue(null);
+    await expect(
+      service.adminManage(SUB_ID, 'approve_request', { paymentId: PAY_ID }),
+    ).rejects.toThrow(/topilmadi/);
+  });
+
+  it('approve_request: nofaol tarifli so‘rov tasdiqlanmaydi', async () => {
+    subscriptionRepository.findOne.mockResolvedValue(makeSub());
+    paymentRepository.findOne.mockResolvedValue(
+      makeRequestPayment({ tariff: makeTariff({ isActive: false }) as any }),
+    );
+    await expect(
+      service.adminManage(SUB_ID, 'approve_request', { paymentId: PAY_ID }),
+    ).rejects.toThrow(/faol emas/);
   });
 });
