@@ -10,6 +10,7 @@ import {
 import { AttendanceEventType, AttendanceSource } from '../common/enums';
 import { Branch } from './branch.entity';
 import { Employee } from './employee.entity';
+import { Group } from './group.entity';
 
 const numericTransformer = {
   to: (v?: number | null) => v,
@@ -39,6 +40,15 @@ export class AttendanceEvent {
 
   @Column({ type: 'uuid', nullable: true })
   deviceId: string | null;
+
+  /** EDUCATION: o'quvchi check-in qilganda aniqlangan dars guruhi */
+  @Index('IDX_att_events_groupId')
+  @Column({ type: 'uuid', nullable: true })
+  groupId: string | null;
+
+  @ManyToOne(() => Group, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'groupId' })
+  group?: Group | null;
 
   @Column({ type: 'enum', enum: AttendanceEventType, enumName: 'attendance_event_type_enum' })
   type: AttendanceEventType;

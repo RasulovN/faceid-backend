@@ -15,6 +15,7 @@ import {
   PayrollAdjustmentType,
   PayrollStatus,
   PenaltyType,
+  PersonType,
   WorkDayStatus,
 } from '../../common/enums';
 import { Paginated, PaginationDto } from '../../common/dto/pagination.dto';
@@ -243,6 +244,8 @@ export class PayrollService {
         companyId,
         deletedAt: IsNull(),
         status: In([EmployeeStatus.ACTIVE, EmployeeStatus.VACATION]),
+        // O'quvchilarga oylik hisoblanmaydi
+        personType: PersonType.EMPLOYEE,
       },
       order: { lastName: 'ASC' },
     });

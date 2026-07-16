@@ -7,7 +7,7 @@ import { Device } from '../../entities/device.entity';
 import { Employee } from '../../entities/employee.entity';
 import { AppException } from '../../common/exceptions/app.exception';
 import { ErrorCodes } from '../../common/constants/error-codes';
-import { EmployeeStatus } from '../../common/enums';
+import { EmployeeStatus, PersonType } from '../../common/enums';
 
 export type LimitKind = 'branch' | 'employee' | 'device';
 
@@ -34,7 +34,13 @@ export class TariffLimitsService {
     const [branches, employees, devices] = await Promise.all([
       this.branchRepository.count({ where: { companyId } }),
       this.employeeRepository.count({
-        where: { companyId, status: Not(EmployeeStatus.FIRED), deletedAt: IsNull() },
+        // O'quvchilar (STUDENT) tarif limitiga kirmaydi
+        where: {
+          companyId,
+          status: Not(EmployeeStatus.FIRED),
+          personType: PersonType.EMPLOYEE,
+          deletedAt: IsNull(),
+        },
       }),
       this.deviceRepository.count({ where: { companyId } }),
     ]);
@@ -125,7 +131,12 @@ export class TariffLimitsService {
       case 'employee':
         return [
           await this.employeeRepository.count({
-            where: { companyId, status: Not(EmployeeStatus.FIRED), deletedAt: IsNull() },
+            where: {
+              companyId,
+              status: Not(EmployeeStatus.FIRED),
+              personType: PersonType.EMPLOYEE,
+              deletedAt: IsNull(),
+            },
           }),
           max,
         ];

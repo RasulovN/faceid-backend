@@ -8,6 +8,8 @@ import { Employee } from '../../entities/employee.entity';
 import { FaceEmbedding } from '../../entities/face-embedding.entity';
 import { WorkDay } from '../../entities/work-day.entity';
 import { DeviceTokenGuard } from '../../common/guards/device-token.guard';
+import { GroupsModule } from '../groups/groups.module';
+import { TelegramModule } from '../telegram/telegram.module';
 import { WorkDaysModule } from '../workdays/workdays.module';
 import { AttendanceController } from './attendance.controller';
 import { AttendanceExportService } from './attendance-export.service';
@@ -26,6 +28,8 @@ import { FaceCheckGateway } from './face-check.gateway';
       FaceEmbedding,
     ]),
     WorkDaysModule,
+    GroupsModule,
+    TelegramModule,
   ],
   controllers: [AttendanceController],
   providers: [AttendanceService, AttendanceExportService, DeviceTokenGuard, FaceCheckGateway],

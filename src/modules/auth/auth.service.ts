@@ -12,7 +12,7 @@ import { Tariff } from '../../entities/tariff.entity';
 import { User } from '../../entities/user.entity';
 import { AppException } from '../../common/exceptions/app.exception';
 import { ErrorCodes } from '../../common/constants/error-codes';
-import { CompanyStatus, SubscriptionStatus, UserRole } from '../../common/enums';
+import { CompanyIndustry, CompanyStatus, SubscriptionStatus, UserRole } from '../../common/enums';
 import { ROLE_PERMISSIONS } from '../../common/constants/permissions';
 import { generateUrlToken } from '../../common/utils/crypto.util';
 import { slugify, slugWithSuffix } from '../../common/utils/slug.util';
@@ -108,6 +108,7 @@ export class AuthService {
         manager.getRepository(Company).create({
           name: dto.companyName,
           slug,
+          industry: dto.industry ?? CompanyIndustry.BUSINESS,
           status: autoApprove ? CompanyStatus.ACTIVE : CompanyStatus.PENDING,
           tariffId: trialTariff?.id ?? null,
           subscriptionStartsAt: autoApprove && trialTariff ? now : null,

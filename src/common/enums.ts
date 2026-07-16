@@ -14,6 +14,20 @@ export enum CompanyStatus {
   EXPIRED = 'EXPIRED',
 }
 
+/** Kompaniya faoliyat turi — interfeys va modullar shu bo'yicha moslashadi */
+export enum CompanyIndustry {
+  /** Ish/ofis davomati (default) */
+  BUSINESS = 'BUSINESS',
+  /** O'quv markazi: o'quvchilar, guruhlar, jurnal, ota-ona xabarlari */
+  EDUCATION = 'EDUCATION',
+}
+
+/** employees jadvalidagi shaxs turi — o'quvchilar ham shu jadvalda saqlanadi */
+export enum PersonType {
+  EMPLOYEE = 'EMPLOYEE',
+  STUDENT = 'STUDENT',
+}
+
 export enum Gender {
   MALE = 'MALE',
   FEMALE = 'FEMALE',

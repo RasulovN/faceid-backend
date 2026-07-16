@@ -8,6 +8,9 @@ export { FaceEmbedding } from './face-embedding.entity';
 export { WorkSchedule, ScheduleDay } from './work-schedule.entity';
 export { AttendanceEvent } from './attendance-event.entity';
 export { WorkDay } from './work-day.entity';
+export { Group, LessonDay } from './group.entity';
+export { GroupStudent } from './group-student.entity';
+export { TelegramContact } from './telegram-contact.entity';
 export { PenaltyRule, BonusRule, OvertimeRule } from './rules.entities';
 export { PayrollRecord } from './payroll-record.entity';
 export { PayrollAdjustment } from './payroll-adjustment.entity';
@@ -34,6 +37,8 @@ import { Company } from './company.entity';
 import { Device } from './device.entity';
 import { Employee } from './employee.entity';
 import { FaceEmbedding } from './face-embedding.entity';
+import { Group } from './group.entity';
+import { GroupStudent } from './group-student.entity';
 import { MobileErrorLog } from './mobile-error-log.entity';
 import { Notification } from './notification.entity';
 import { Payment } from './payment.entity';
@@ -45,6 +50,7 @@ import { SiteSetting } from './site-setting.entity';
 import { SiteVisit } from './site-visit.entity';
 import { StorageSnapshot } from './storage-snapshot.entity';
 import { Tariff } from './tariff.entity';
+import { TelegramContact } from './telegram-contact.entity';
 import { UsageDaily } from './usage-daily.entity';
 import { User } from './user.entity';
 import { WorkDay } from './work-day.entity';
@@ -61,6 +67,9 @@ export const ALL_ENTITIES = [
   WorkSchedule,
   AttendanceEvent,
   WorkDay,
+  Group,
+  GroupStudent,
+  TelegramContact,
   PenaltyRule,
   BonusRule,
   OvertimeRule,

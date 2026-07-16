@@ -11,6 +11,7 @@ import {
   CompanyStatus,
   EmployeeStatus,
   PaymeState,
+  PersonType,
   SubscriptionStatus,
   WorkDayStatus,
 } from '../../common/enums';
@@ -40,7 +41,21 @@ export class StatsService {
     const today = dateStrInTz(new Date(), timezone);
 
     const total = await this.employeeRepository.count({
-      where: { companyId, status: EmployeeStatus.ACTIVE, deletedAt: IsNull() },
+      where: {
+        companyId,
+        status: EmployeeStatus.ACTIVE,
+        personType: PersonType.EMPLOYEE,
+        deletedAt: IsNull(),
+      },
+    });
+    // EDUCATION kompaniyalar uchun: faol o'quvchilar soni (dashboard kartasi)
+    const studentsTotal = await this.employeeRepository.count({
+      where: {
+        companyId,
+        status: EmployeeStatus.ACTIVE,
+        personType: PersonType.STUDENT,
+        deletedAt: IsNull(),
+      },
     });
 
     // Bugungi statuslar
@@ -120,6 +135,7 @@ export class StatsService {
         absent: Math.max(0, total - present),
         checkedOut: Number(checkedOutRows[0]?.count ?? 0),
       },
+      studentsTotal,
       weekChart,
       recentEvents: recentEvents.map((e) => ({
         id: e.id,

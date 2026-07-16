@@ -8,7 +8,7 @@ import { Employee } from '../../entities/employee.entity';
 import { Holiday } from '../../entities/holiday.entity';
 import { WorkDay } from '../../entities/work-day.entity';
 import { ScheduleDay, WorkSchedule } from '../../entities/work-schedule.entity';
-import { EmployeeStatus } from '../../common/enums';
+import { EmployeeStatus, PersonType } from '../../common/enums';
 import {
   dateStrInTz,
   dayOfWeekInTz,
@@ -188,6 +188,8 @@ export class WorkDayService {
         companyId,
         deletedAt: IsNull(),
         status: EmployeeStatus.ACTIVE,
+        // O'quvchilar ish kuni hisobiga kirmaydi — ularning davomati guruh jurnalida
+        personType: PersonType.EMPLOYEE,
         ...(branchId ? { branchId } : {}),
       },
     });
@@ -239,8 +241,18 @@ export class WorkDayService {
         dateStrInTz(new Date(Date.now() - 24 * 60 * 60 * 1000), timezone);
       const employees = await this.employeeRepository.find({
         where: [
-          { companyId: company.id, status: EmployeeStatus.ACTIVE, deletedAt: IsNull() },
-          { companyId: company.id, status: EmployeeStatus.VACATION, deletedAt: IsNull() },
+          {
+            companyId: company.id,
+            status: EmployeeStatus.ACTIVE,
+            personType: PersonType.EMPLOYEE,
+            deletedAt: IsNull(),
+          },
+          {
+            companyId: company.id,
+            status: EmployeeStatus.VACATION,
+            personType: PersonType.EMPLOYEE,
+            deletedAt: IsNull(),
+          },
         ],
       });
       for (const employee of employees) {

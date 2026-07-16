@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -8,6 +9,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { CompanyIndustry } from '../../../common/enums';
 
 const PHONE_REGEX = /^\+998\d{9}$/;
 const PHONE_MESSAGE = 'Telefon raqam +998XXXXXXXXX formatida bo‘lishi kerak';
@@ -18,6 +20,15 @@ export class RegisterDto {
   @IsNotEmpty()
   @MaxLength(255)
   companyName: string;
+
+  @ApiPropertyOptional({
+    enum: CompanyIndustry,
+    default: CompanyIndustry.BUSINESS,
+    description: 'Faoliyat turi: BUSINESS (ish davomati) yoki EDUCATION (o‘quv markazi)',
+  })
+  @IsOptional()
+  @IsIn(Object.values(CompanyIndustry))
+  industry?: CompanyIndustry;
 
   @ApiProperty({ example: 'Aziz' })
   @IsString()

@@ -24,7 +24,7 @@ import {
 } from './dto/employee.dtos';
 import { CurrentUser, Permissions, RequestUser, SkipEnvelope } from '../../common/decorators';
 import { PERMISSIONS, roleHasPermission } from '../../common/constants/permissions';
-import { UserRole } from '../../common/enums';
+import { PersonType, UserRole } from '../../common/enums';
 import { AppException } from '../../common/exceptions/app.exception';
 import { parseMultipart } from '../../common/utils/multipart.util';
 
@@ -53,12 +53,22 @@ export class EmployeesController {
   @Get('import/template')
   @Permissions(PERMISSIONS.EMPLOYEES_CREATE)
   @SkipEnvelope()
-  @ApiOperation({ summary: 'Xodimlarni ommaviy import qilish uchun Excel shablon (.xlsx)' })
-  async importTemplate(@CurrentUser() user: RequestUser, @Res() reply: FastifyReply) {
-    const buffer = await this.importService.buildTemplate(user.companyId!);
+  @ApiOperation({
+    summary:
+      'Ommaviy import Excel shabloni (.xlsx). ?type=STUDENT — o‘quvchilar shabloni',
+  })
+  async importTemplate(
+    @CurrentUser() user: RequestUser,
+    @Res() reply: FastifyReply,
+    @Query('type') type?: string,
+  ) {
+    const personType = type === PersonType.STUDENT ? PersonType.STUDENT : PersonType.EMPLOYEE;
+    const buffer = await this.importService.buildTemplate(user.companyId!, personType);
+    const filename =
+      personType === PersonType.STUDENT ? 'oquvchilar-shablon.xlsx' : 'xodimlar-shablon.xlsx';
     void reply
       .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-      .header('Content-Disposition', 'attachment; filename="xodimlar-shablon.xlsx"')
+      .header('Content-Disposition', `attachment; filename="${filename}"`)
       .send(buffer);
   }
 
@@ -66,14 +76,20 @@ export class EmployeesController {
   @Permissions(PERMISSIONS.EMPLOYEES_CREATE)
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
-    summary: "Excel (.xlsx) fayldan xodimlarni ommaviy import qilish — har qator bo'yicha natija",
+    summary:
+      "Excel (.xlsx) fayldan ommaviy import — har qator bo'yicha natija. ?type=STUDENT — o'quvchilar",
   })
-  async import(@CurrentUser() user: RequestUser, @Req() req: FastifyRequest) {
+  async import(
+    @CurrentUser() user: RequestUser,
+    @Req() req: FastifyRequest,
+    @Query('type') type?: string,
+  ) {
     const { files } = await parseMultipart(req, { maxFiles: 1, imagesOnly: false });
     if (files.length === 0) {
       throw AppException.validation('Excel (.xlsx) fayl biriktiring');
     }
-    return this.importService.import(user.companyId!, files[0]);
+    const personType = type === PersonType.STUDENT ? PersonType.STUDENT : PersonType.EMPLOYEE;
+    return this.importService.import(user.companyId!, files[0], personType);
   }
 
   @Get(':id')

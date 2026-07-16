@@ -8,7 +8,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { CompanyStatus } from '../common/enums';
+import { CompanyIndustry, CompanyStatus } from '../common/enums';
 import { Tariff } from './tariff.entity';
 
 @Entity('companies')
@@ -36,6 +36,15 @@ export class Company {
     default: CompanyStatus.PENDING,
   })
   status: CompanyStatus;
+
+  /** Faoliyat turi: BUSINESS (ish davomati) yoki EDUCATION (o'quv markazi) */
+  @Column({
+    type: 'enum',
+    enum: CompanyIndustry,
+    enumName: 'company_industry_enum',
+    default: CompanyIndustry.BUSINESS,
+  })
+  industry: CompanyIndustry;
 
   @Column({ type: 'uuid', nullable: true })
   tariffId: string | null;

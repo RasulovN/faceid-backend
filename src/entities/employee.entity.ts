@@ -10,7 +10,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { EmployeeStatus, Gender, SalaryType } from '../common/enums';
+import { EmployeeStatus, Gender, PersonType, SalaryType } from '../common/enums';
 import { decryptString, encryptString } from '../common/utils/crypto.util';
 import { Branch } from './branch.entity';
 import { User } from './user.entity';
@@ -36,13 +36,28 @@ export class Employee {
   @JoinColumn({ name: 'branchId' })
   branch?: Branch;
 
+  /** STUDENT uchun null — o'quvchiga login/User yozuvi yaratilmaydi */
   @Index('UQ_employees_userId', { unique: true })
-  @Column({ type: 'uuid' })
-  userId: string;
+  @Column({ type: 'uuid', nullable: true })
+  userId: string | null;
 
   @OneToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'userId' })
   user?: User;
+
+  /** EMPLOYEE (xodim) yoki STUDENT (o'quvchi) — bitta jadval, bitta yuz galereyasi */
+  @Index('IDX_employees_personType')
+  @Column({
+    type: 'enum',
+    enum: PersonType,
+    enumName: 'person_type_enum',
+    default: PersonType.EMPLOYEE,
+  })
+  personType: PersonType;
+
+  /** STUDENT: ota-ona telefonlari (bir nechta) — Telegram davomat xabarlari shu raqamlarga boradi */
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  parentPhones: string[];
 
   /** Biriktirilgan ish grafigi — shablonga to'g'ridan-to'g'ri havola (klonlanmaydi) */
   @Index('IDX_employees_scheduleId')

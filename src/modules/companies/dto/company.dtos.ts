@@ -8,7 +8,7 @@ import {
   Matches,
   MaxLength,
 } from 'class-validator';
-import { CompanyStatus } from '../../../common/enums';
+import { CompanyIndustry, CompanyStatus } from '../../../common/enums';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class UpdateCompanyProfileDto {
@@ -50,6 +50,14 @@ export class UpdateCompanyProfileDto {
   @IsOptional()
   @IsObject()
   settings?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    enum: CompanyIndustry,
+    description: 'Faoliyat turi — keyinchalik ham o‘zgartirsa bo‘ladi',
+  })
+  @IsOptional()
+  @IsIn(Object.values(CompanyIndustry))
+  industry?: CompanyIndustry;
 }
 
 export class AdminUpdateCompanyDto extends UpdateCompanyProfileDto {}

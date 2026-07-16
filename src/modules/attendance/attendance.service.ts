@@ -18,6 +18,7 @@ import {
   CompanyStatus,
   DeviceDirection,
   EmployeeStatus,
+  PersonType,
   WorkDayStatus,
 } from '../../common/enums';
 import { RequestUser } from '../../common/decorators';
@@ -27,7 +28,9 @@ import { addDaysToDateStr, dateStrInTz, zonedTimeToUtc } from '../../common/util
 import { AuditService } from '../audit/audit.service';
 import { FaceService } from '../face/face.service';
 import { MinioService } from '../files/minio.service';
+import { GroupsService, ResolvedLesson } from '../groups/groups.service';
 import { REDIS_CLIENT } from '../redis/redis.module';
+import { TelegramService } from '../telegram/telegram.service';
 import { WorkDayService } from '../workdays/workday.service';
 import { WsService } from '../ws/ws.service';
 import {
@@ -87,6 +90,8 @@ export class AttendanceService {
     private readonly workDayService: WorkDayService,
     private readonly wsService: WsService,
     private readonly auditService: AuditService,
+    private readonly groupsService: GroupsService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   // ================= KIOSK =================
@@ -193,8 +198,9 @@ export class AttendanceService {
 
     return {
       recognized: true as const,
-      employee: this.employeeSummary(employee),
+      employee: this.employeeSummary(employee, event.lesson),
       event: { id: event.id, type: event.type, timestamp: event.timestamp },
+      lesson: this.lessonSummary(event.lesson),
       confidence: gate.confidence,
       livenessScore: gate.livenessScore,
     };
@@ -300,8 +306,9 @@ export class AttendanceService {
 
     return {
       recognized: true as const,
-      employee: this.employeeSummary(employee),
+      employee: this.employeeSummary(employee, event.lesson),
       event: { id: event.id, type: event.type, timestamp: event.timestamp },
+      lesson: this.lessonSummary(event.lesson),
       confidence: pending.confidence,
       livenessScore: pending.livenessScore,
     };
@@ -929,7 +936,12 @@ export class AttendanceService {
   async todayStats(companyId: string, timezone: string) {
     const today = dateStrInTz(new Date(), timezone);
     const total = await this.employeeRepository.count({
-      where: { companyId, status: EmployeeStatus.ACTIVE, deletedAt: IsNull() },
+      where: {
+        companyId,
+        status: EmployeeStatus.ACTIVE,
+        personType: PersonType.EMPLOYEE,
+        deletedAt: IsNull(),
+      },
     });
     const workDays = await this.workDayRepository
       .createQueryBuilder('wd')
@@ -948,6 +960,7 @@ export class AttendanceService {
          FROM attendance_events ae
          JOIN employees e ON e.id = ae."employeeId"
          WHERE e."companyId" = $1 AND ae."timestamp" >= $2
+           AND e."personType" = 'EMPLOYEE'
          ORDER BY ae."employeeId", ae."timestamp" DESC
        ) last_events WHERE last_events."type" = 'CHECK_OUT'`,
       [companyId, dayStart],
@@ -980,12 +993,22 @@ export class AttendanceService {
     note?: string | null;
     timezone: string;
     skipDebounce?: boolean;
-  }): Promise<AttendanceEvent> {
+  }): Promise<AttendanceEvent & { lesson?: ResolvedLesson | null }> {
+    // EDUCATION: o'quvchi uchun joriy darsni aniqlaymiz — event guruhga bog'lanadi
+    const isStudent = params.employee.personType === PersonType.STUDENT;
+    let lesson: ResolvedLesson | null = null;
+    if (isStudent) {
+      lesson = await this.groupsService
+        .resolveCurrentLesson(params.employee.id, params.timestamp, params.timezone)
+        .catch(() => null);
+    }
+
     const event = await this.eventRepository.save(
       this.eventRepository.create({
         employeeId: params.employee.id,
         branchId: params.branchId,
         deviceId: params.deviceId,
+        groupId: lesson?.group.id ?? null,
         type: params.type,
         source: params.source,
         timestamp: params.timestamp,
@@ -1008,8 +1031,13 @@ export class AttendanceService {
       });
     }
 
-    const dateStr = dateStrInTz(event.timestamp, params.timezone);
-    await this.workDayService.recalc(params.employee, dateStr, params.timezone);
+    if (isStudent) {
+      // O'quvchida WorkDay hisoblanmaydi; ota-onaga Telegram xabar fonda ketadi
+      void this.notifyParentInBackground(params.employee, lesson, event, params.timezone);
+    } else {
+      const dateStr = dateStrInTz(event.timestamp, params.timezone);
+      await this.workDayService.recalc(params.employee, dateStr, params.timezone);
+    }
 
     // Panel real-time yangilanishi (todayStats + WS emit) faqat admin panel
     // uchun — kiosk/mobil klient javobini KUTDIRMAYDI (fonda bajariladi).
@@ -1024,13 +1052,40 @@ export class AttendanceService {
             snapshotUrl: event.snapshotUrl,
             isManual: event.isManual,
           },
-          employee: this.employeeSummary(params.employee),
+          employee: this.employeeSummary(params.employee, lesson),
           todayStats,
         });
       })
       .catch(() => undefined);
 
-    return event;
+    return Object.assign(event, { lesson });
+  }
+
+  /** O'quvchi check-in/out'ida ota-onaga Telegram xabar (javobni kutdirmaydi) */
+  private async notifyParentInBackground(
+    student: Employee,
+    lesson: ResolvedLesson | null,
+    event: AttendanceEvent,
+    timezone: string,
+  ): Promise<void> {
+    try {
+      if ((student.parentPhones ?? []).length === 0 || !this.telegramService.enabled) return;
+      const company = await this.companyRepository.findOne({
+        where: { id: student.companyId },
+      });
+      await this.telegramService.notifyStudentEvent({
+        student,
+        group: lesson?.group ?? null,
+        type: event.type,
+        timestamp: event.timestamp,
+        minutesLate:
+          event.type === AttendanceEventType.CHECK_IN ? (lesson?.minutesLate ?? 0) : 0,
+        companyName: company?.name ?? 'FaceID',
+        timezone,
+      });
+    } catch {
+      // Xabar yuborilmasa ham davomat saqlangan — jim o'tamiz
+    }
   }
 
   /** direction=BOTH: bugungi oxirgi eventga qarab IN/OUT almashadi */
@@ -1100,13 +1155,29 @@ export class AttendanceService {
     return company?.timezone || 'Asia/Tashkent';
   }
 
-  private employeeSummary(employee: Employee) {
+  private employeeSummary(employee: Employee, lesson?: ResolvedLesson | null) {
     return {
       id: employee.id,
       fullName: employee.fullName,
       photoUrl: employee.photoUrls?.[0] ?? null,
-      position: employee.position,
+      // O'quvchi uchun lavozim o'rniga guruh nomi — kiosk UI o'zgarishsiz ko'rsatadi
+      position:
+        employee.personType === PersonType.STUDENT
+          ? (lesson?.group.name ?? employee.position)
+          : employee.position,
+      personType: employee.personType,
     };
+  }
+
+  /** Kiosk javobi uchun dars ma'lumoti (o'quvchi bo'lmasa null) */
+  private lessonSummary(lesson: ResolvedLesson | null | undefined) {
+    return lesson
+      ? {
+          groupId: lesson.group.id,
+          groupName: lesson.group.name,
+          minutesLate: lesson.minutesLate,
+        }
+      : null;
   }
 
   private presentEvent(event: AttendanceEvent) {

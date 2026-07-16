@@ -24,6 +24,7 @@ import { DevicesModule } from './modules/devices/devices.module';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { FaceModule } from './modules/face/face.module';
 import { FilesModule } from './modules/files/files.module';
+import { GroupsModule } from './modules/groups/groups.module';
 import { HealthModule } from './modules/health/health.module';
 import { MailModule } from './modules/mail/mail.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -38,6 +39,7 @@ import { MobileLogsModule } from './modules/mobile-logs/mobile-logs.module';
 import { SiteAnalyticsModule } from './modules/site-analytics/site-analytics.module';
 import { StatsModule } from './modules/stats/stats.module';
 import { StorageAnalyticsModule } from './modules/storage-analytics/storage-analytics.module';
+import { TelegramModule } from './modules/telegram/telegram.module';
 import { LeadsModule } from './modules/leads/leads.module';
 import { TariffsModule } from './modules/tariffs/tariffs.module';
 import { UsageModule } from './modules/usage/usage.module';
@@ -82,6 +84,7 @@ import { WsModule } from './modules/ws/ws.module';
     // Infra
     RedisModule,
     MailModule,
+    TelegramModule,
     FaceModule,
     FilesModule,
     WsModule,
@@ -96,6 +99,7 @@ import { WsModule } from './modules/ws/ws.module';
     CompaniesModule,
     BranchesModule,
     EmployeesModule,
+    GroupsModule,
     SchedulesModule,
     WorkDaysModule,
     AttendanceModule,

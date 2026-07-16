@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional, OmitType, PartialType } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
   IsEmail,
   IsIn,
@@ -15,7 +17,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { EmployeeStatus, Gender, SalaryType } from '../../../common/enums';
+import { EmployeeStatus, Gender, PersonType, SalaryType } from '../../../common/enums';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class EmployeeCredentialsDto {
@@ -104,20 +106,45 @@ export class CreateEmployeeDto {
   @IsDateString()
   hiredAt?: string;
 
-  @ApiProperty({ enum: SalaryType })
+  @ApiPropertyOptional({ enum: SalaryType, description: 'STUDENT uchun shart emas (default FIXED)' })
+  @IsOptional()
   @IsIn(Object.values(SalaryType))
-  salaryType: SalaryType;
+  salaryType?: SalaryType;
 
-  @ApiProperty({ description: 'tiyin', example: 500000000 })
+  @ApiPropertyOptional({ description: 'tiyin, STUDENT uchun shart emas', example: 500000000 })
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  salaryAmount: number;
+  salaryAmount?: number;
 
-  @ApiProperty({ type: EmployeeCredentialsDto })
+  @ApiPropertyOptional({
+    type: EmployeeCredentialsDto,
+    description: 'EMPLOYEE uchun majburiy; STUDENT uchun berilmaydi (login yaratilmaydi)',
+  })
+  @IsOptional()
   @ValidateNested()
   @Type(() => EmployeeCredentialsDto)
-  credentials: EmployeeCredentialsDto;
+  credentials?: EmployeeCredentialsDto;
+
+  @ApiPropertyOptional({ enum: PersonType, default: PersonType.EMPLOYEE })
+  @IsOptional()
+  @IsIn(Object.values(PersonType))
+  personType?: PersonType;
+
+  @ApiPropertyOptional({
+    example: ['+998901234567', '+998907654321'],
+    description: 'STUDENT: ota-ona telefonlari (3 tagacha, Telegram davomat xabarlari uchun)',
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(3, { message: 'Ko‘pi bilan 3 ta ota-ona raqami kiritish mumkin' })
+  @Matches(/^\+998\d{9}$/, {
+    each: true,
+    message: 'Ota-ona telefoni +998XXXXXXXXX formatida bo‘lishi kerak',
+  })
+  parentPhones?: string[];
 
   @ApiPropertyOptional({ description: 'Individual grafik biriktirish' })
   @IsOptional()
@@ -137,7 +164,7 @@ export class CreateEmployeeDto {
 }
 
 export class UpdateEmployeeDto extends PartialType(
-  OmitType(CreateEmployeeDto, ['credentials'] as const),
+  OmitType(CreateEmployeeDto, ['credentials', 'personType'] as const),
 ) {}
 
 export class UpdateEmployeeStatusDto {
@@ -166,6 +193,14 @@ export class EmployeeListQueryDto extends PaginationDto {
   @IsOptional()
   @IsString()
   department?: string;
+
+  @ApiPropertyOptional({
+    enum: PersonType,
+    description: 'Berilmasa EMPLOYEE — mavjud xodim ro‘yxatlari o‘quvchilarsiz qoladi',
+  })
+  @IsOptional()
+  @IsIn(Object.values(PersonType))
+  type?: PersonType;
 }
 
 export class EmployeeAttendanceQueryDto {

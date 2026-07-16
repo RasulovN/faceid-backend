@@ -5,13 +5,14 @@ import * as ExcelJS from 'exceljs';
 import { Branch } from '../../entities/branch.entity';
 import { User } from '../../entities/user.entity';
 import { AppException } from '../../common/exceptions/app.exception';
-import { Gender, SalaryType } from '../../common/enums';
+import { Gender, PersonType, SalaryType } from '../../common/enums';
 import { UploadedFile } from '../../common/utils/multipart.util';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/employee.dtos';
 
 /** Import shablonidagi varaq nomi va ustunlar tartibi */
 const SHEET_NAME = 'Xodimlar';
+const STUDENTS_SHEET = "O'quvchilar";
 const BRANCHES_SHEET = 'Filiallar';
 const GUIDE_SHEET = "Yo'riqnoma";
 const MAX_ROWS = 500;
@@ -40,6 +41,22 @@ const COLUMNS: Array<{ header: string; key: string; width: number }> = [
 
 const COL = Object.fromEntries(COLUMNS.map((c, i) => [c.key, i + 1])) as Record<string, number>;
 
+/** EDUCATION: o'quvchi importi ustunlari — login/maosh yo'q, ota-ona telefoni bor */
+const STUDENT_COLUMNS: Array<{ header: string; key: string; width: number }> = [
+  { header: 'Familiya *', key: 'lastName', width: 18 },
+  { header: 'Ism *', key: 'firstName', width: 16 },
+  { header: 'Otasining ismi', key: 'middleName', width: 18 },
+  { header: 'Filial *', key: 'branch', width: 22 },
+  { header: 'Ota-ona telefonlari', key: 'parentPhone', width: 24 },
+  { header: "Tug'ilgan sana", key: 'birthDate', width: 15 },
+  { header: 'Jins', key: 'gender', width: 10 },
+  { header: 'Izoh', key: 'notes', width: 24 },
+];
+
+const SCOL = Object.fromEntries(
+  STUDENT_COLUMNS.map((c, i) => [c.key, i + 1]),
+) as Record<string, number>;
+
 export interface ImportRowError {
   row: number;
   message: string;
@@ -62,7 +79,11 @@ export class EmployeesImportService {
 
   // ---------- Shablon ----------
 
-  async buildTemplate(companyId: string): Promise<Buffer> {
+  async buildTemplate(
+    companyId: string,
+    type: PersonType = PersonType.EMPLOYEE,
+  ): Promise<Buffer> {
+    if (type === PersonType.STUDENT) return this.buildStudentTemplate(companyId);
     const branches = await this.branchRepository.find({
       where: { companyId },
       order: { name: 'ASC' },
@@ -147,9 +168,88 @@ export class EmployeesImportService {
     return Buffer.from(await workbook.xlsx.writeBuffer());
   }
 
+  /** O'quvchilar uchun soddalashtirilgan shablon (login/maosh ustunlarisiz) */
+  private async buildStudentTemplate(companyId: string): Promise<Buffer> {
+    const branches = await this.branchRepository.find({
+      where: { companyId },
+      order: { name: 'ASC' },
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(STUDENTS_SHEET);
+    sheet.columns = STUDENT_COLUMNS.map((c) => ({
+      header: c.header,
+      key: c.key,
+      width: c.width,
+    }));
+
+    const headerRow = sheet.getRow(1);
+    headerRow.height = 22;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } } };
+    });
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    for (const key of ['parentPhone', 'birthDate']) {
+      sheet.getColumn(SCOL[key]).numFmt = '@';
+    }
+
+    const branchSheet = workbook.addWorksheet(BRANCHES_SHEET);
+    branchSheet.getCell('A1').value = 'Filial nomi';
+    branchSheet.getCell('A1').font = { bold: true };
+    branchSheet.getColumn(1).width = 30;
+    branches.forEach((b, i) => {
+      branchSheet.getCell(`A${i + 2}`).value = b.name;
+    });
+    const branchListEnd = Math.max(branches.length + 1, 2);
+
+    const colLetter = (n: number) => sheet.getColumn(n).letter;
+    for (let r = 2; r <= MAX_ROWS + 1; r++) {
+      sheet.getCell(`${colLetter(SCOL.branch)}${r}`).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: [`'${BRANCHES_SHEET}'!$A$2:$A$${branchListEnd}`],
+      };
+      sheet.getCell(`${colLetter(SCOL.gender)}${r}`).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"Erkak,Ayol"'],
+      };
+    }
+
+    const guide = workbook.addWorksheet(GUIDE_SHEET);
+    guide.getColumn(1).width = 110;
+    const lines = [
+      "O'QUVCHILARNI OMMAVIY IMPORT QILISH — YO'RIQNOMA",
+      '',
+      `1. Ma'lumotlarni "${STUDENTS_SHEET}" varag'iga 2-qatordan boshlab kiriting (1-qator — sarlavha).`,
+      '2. * bilan belgilangan ustunlar majburiy: Familiya, Ism, Filial.',
+      `3. Filial — "${BRANCHES_SHEET}" varag'idagi nomlardan birini tanlang (katakda dropdown bor).`,
+      "4. Ota-ona telefonlari: +998901234567 formatida, bir nechtasi vergul bilan (ko'pi bilan 3 ta) — Telegram davomat xabarlari shu raqamlarga boradi.",
+      "5. Sanalar: YYYY-MM-DD (masalan 2012-04-12) yoki KK.OO.YYYY (12.04.2012) formatida.",
+      "6. O'quvchi raqami (S-001) avtomatik beriladi, login yaratilmaydi.",
+      "7. Import qilingach o'quvchilarni guruhlarga biriktiring va rasm yuklang.",
+      `8. Bir faylda ko'pi bilan ${MAX_ROWS} ta o'quvchi import qilinadi.`,
+    ];
+    lines.forEach((text, i) => {
+      const cell = guide.getCell(`A${i + 1}`);
+      cell.value = text;
+      if (i === 0) cell.font = { bold: true, size: 13 };
+      cell.alignment = { wrapText: true };
+    });
+
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+  }
+
   // ---------- Import ----------
 
-  async import(companyId: string, file: UploadedFile): Promise<ImportResult> {
+  async import(
+    companyId: string,
+    file: UploadedFile,
+    type: PersonType = PersonType.EMPLOYEE,
+  ): Promise<ImportResult> {
     const isXlsx =
       file.mimetype === XLSX_MIME || file.filename?.toLowerCase().endsWith('.xlsx');
     if (!isXlsx) {
@@ -162,7 +262,9 @@ export class EmployeesImportService {
     } catch {
       throw AppException.validation('Fayl ochilmadi — .xlsx formatida ekanini tekshiring');
     }
-    const sheet = workbook.getWorksheet(SHEET_NAME) ?? workbook.worksheets[0];
+    const isStudent = type === PersonType.STUDENT;
+    const sheetName = isStudent ? STUDENTS_SHEET : SHEET_NAME;
+    const sheet = workbook.getWorksheet(sheetName) ?? workbook.worksheets[0];
     if (!sheet) throw AppException.validation('Faylda varaq topilmadi');
     if (sheet.rowCount > MAX_ROWS + 1) {
       throw AppException.validation(`Bir faylda ko'pi bilan ${MAX_ROWS} qator import qilinadi`);
@@ -178,10 +280,12 @@ export class EmployeesImportService {
 
     for (let r = 2; r <= sheet.rowCount; r++) {
       const row = sheet.getRow(r);
-      if (this.isEmptyRow(row)) continue;
+      if (this.isEmptyRow(row, isStudent ? STUDENT_COLUMNS.length : COLUMNS.length)) continue;
       total++;
       try {
-        const dto = await this.parseRow(row, branchByName, usedUsernames);
+        const dto = isStudent
+          ? this.parseStudentRow(row, branchByName)
+          : await this.parseRow(row, branchByName, usedUsernames);
         await this.employeesService.create(companyId, dto);
         created++;
       } catch (err) {
@@ -194,7 +298,7 @@ export class EmployeesImportService {
 
     if (total === 0) {
       throw AppException.validation(
-        `Faylda ma'lumot topilmadi — "${SHEET_NAME}" varag'ini 2-qatordan boshlab to'ldiring`,
+        `Faylda ma'lumot topilmadi — "${sheetName}" varag'ini 2-qatordan boshlab to'ldiring`,
       );
     }
 
@@ -284,6 +388,64 @@ export class EmployeesImportService {
     return dto as CreateEmployeeDto;
   }
 
+  /** O'quvchi qatori: Familiya/Ism/Filial majburiy, login yaratilmaydi */
+  private parseStudentRow(
+    row: ExcelJS.Row,
+    branchByName: Map<string, string>,
+  ): CreateEmployeeDto {
+    const text = (key: string) => this.cellText(row.getCell(SCOL[key]));
+
+    const lastName = text('lastName');
+    const firstName = text('firstName');
+    const branchName = text('branch');
+
+    const missing: string[] = [];
+    if (!lastName) missing.push('Familiya');
+    if (!firstName) missing.push('Ism');
+    if (!branchName) missing.push('Filial');
+    if (missing.length > 0) {
+      throw AppException.validation(`Majburiy ustunlar to'ldirilmagan: ${missing.join(', ')}`);
+    }
+
+    const branchId = branchByName.get(this.norm(branchName));
+    if (!branchId) {
+      throw AppException.validation(
+        `Filial topilmadi: "${branchName}" — "${BRANCHES_SHEET}" varag'idagi nomlardan foydalaning`,
+      );
+    }
+
+    // Bitta katakda bir nechta raqam bo'lishi mumkin (vergul/nuqta-vergul bilan)
+    const parentPhones: string[] = [];
+    if (text('parentPhone')) {
+      for (const piece of text('parentPhone').split(/[,;]+/)) {
+        if (!piece.trim()) continue;
+        const normalized = this.normalizePhone(piece.trim());
+        if (!/^\+998\d{9}$/.test(normalized)) {
+          throw AppException.validation(
+            `Ota-ona telefoni noto'g'ri: "${piece.trim()}" (+998XXXXXXXXX kutilgan)`,
+          );
+        }
+        if (!parentPhones.includes(normalized)) parentPhones.push(normalized);
+      }
+      if (parentPhones.length > 3) {
+        throw AppException.validation("Ko'pi bilan 3 ta ota-ona raqami kiritish mumkin");
+      }
+    }
+
+    const dto = {
+      personType: PersonType.STUDENT,
+      firstName,
+      lastName,
+      middleName: text('middleName') || undefined,
+      birthDate: this.parseDate(text('birthDate'), "Tug'ilgan sana"),
+      gender: this.parseGender(text('gender')),
+      branchId,
+      parentPhones: parentPhones.length > 0 ? parentPhones : undefined,
+      notes: text('notes') || undefined,
+    };
+    return dto as CreateEmployeeDto;
+  }
+
   private cellText(cell: ExcelJS.Cell): string {
     const v = cell.value;
     if (v === null || v === undefined) return '';
@@ -302,8 +464,8 @@ export class EmployeesImportService {
     return String(v).trim();
   }
 
-  private isEmptyRow(row: ExcelJS.Row): boolean {
-    for (let c = 1; c <= COLUMNS.length; c++) {
+  private isEmptyRow(row: ExcelJS.Row, columnCount: number = COLUMNS.length): boolean {
+    for (let c = 1; c <= columnCount; c++) {
       if (this.cellText(row.getCell(c))) return false;
     }
     return true;

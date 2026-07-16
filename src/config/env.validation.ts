@@ -109,6 +109,13 @@ export const envValidationSchema = Joi.object({
   // ---------- Yandex Maps ----------
   YANDEX_MAPS_API_KEY: Joi.string().allow('').optional(),
 
+  // ---------- Telegram bot (EDUCATION: ota-ona davomat xabarlari) ----------
+  // Bo'sh qoldirilsa bot o'chiq: polling boshlanmaydi, xabar yuborilmaydi.
+  TELEGRAM_BOT_TOKEN: Joi.string().allow('').default(''),
+  // Mini App (ota-ona kabineti) URL. Bo'sh — CLIENT_URL/parent ishlatiladi;
+  // https bo'lmasa tugma/menyu qo'shilmaydi (Telegram talabi).
+  TELEGRAM_WEBAPP_URL: Joi.string().uri().allow('').default(''),
+
   // ---------- Frontend URL'lar ----------
   LANDING_URL: Joi.string().uri().default('http://localhost:3001'),
   // client/ — yagona SPA (/superadmin, /app, /kiosk hammasi shu originda)

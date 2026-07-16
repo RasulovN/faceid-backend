@@ -20,7 +20,7 @@ import { User } from '../../entities/user.entity';
 import { WorkDay } from '../../entities/work-day.entity';
 import { WorkSchedule } from '../../entities/work-schedule.entity';
 import { AppException } from '../../common/exceptions/app.exception';
-import { EmployeeStatus, UserRole } from '../../common/enums';
+import { EmployeeStatus, PersonType, SalaryType, UserRole } from '../../common/enums';
 import { Paginated } from '../../common/dto/pagination.dto';
 import { generatePassword } from '../../common/utils/crypto.util';
 import { slugify } from '../../common/utils/slug.util';
@@ -75,7 +75,12 @@ export class EmployeesService {
   // ---------- Ro'yxat ----------
 
   async findAll(companyId: string, query: EmployeeListQueryDto) {
-    const base: FindOptionsWhere<Employee> = { companyId, deletedAt: IsNull() };
+    const base: FindOptionsWhere<Employee> = {
+      companyId,
+      deletedAt: IsNull(),
+      // Default EMPLOYEE — mavjud "Xodimlar" sahifasi o'quvchilarsiz ishlayveradi
+      personType: query.type ?? PersonType.EMPLOYEE,
+    };
     if (query.branchId) base.branchId = query.branchId;
     if (query.status) base.status = query.status;
     if (query.department) base.department = query.department;
@@ -109,13 +114,63 @@ export class EmployeesService {
   // ---------- Yaratish (bitta tranzaksiya) ----------
 
   async create(companyId: string, dto: CreateEmployeeDto) {
-    await this.tariffLimitsService.assertCanCreate(companyId, 'employee');
+    const personType = dto.personType ?? PersonType.EMPLOYEE;
+    // O'quvchilar tarif "xodim" limitiga kirmaydi (MVP: cheklanmagan)
+    if (personType === PersonType.EMPLOYEE) {
+      await this.tariffLimitsService.assertCanCreate(companyId, 'employee');
+    }
 
     const branch = await this.branchRepository.findOne({
       where: { id: dto.branchId, companyId },
     });
     if (!branch) throw AppException.notFound('Filial topilmadi');
 
+    const tabNumber =
+      dto.tabNumber?.trim() ||
+      (await this.generateTabNumber(companyId, personType === PersonType.STUDENT ? 'S' : 'T'));
+    if (
+      dto.tabNumber &&
+      (await this.employeeRepository.exists({
+        where: { companyId, tabNumber, deletedAt: IsNull() },
+      }))
+    ) {
+      throw AppException.conflict(`Tab raqami "${tabNumber}" allaqachon band`);
+    }
+
+    if (dto.scheduleId) await this.assertScheduleExists(companyId, dto.scheduleId);
+
+    const baseFields = {
+      companyId,
+      branchId: dto.branchId,
+      personType,
+      parentPhones: [...new Set((dto.parentPhones ?? []).map((p) => p.trim()).filter(Boolean))],
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      middleName: dto.middleName ?? null,
+      birthDate: dto.birthDate ?? null,
+      gender: dto.gender ?? null,
+      position: dto.position ?? null,
+      department: dto.department ?? null,
+      tabNumber,
+      hiredAt: dto.hiredAt ?? null,
+      salaryType: dto.salaryType ?? SalaryType.FIXED,
+      salaryAmount: dto.salaryAmount ?? 0,
+      scheduleId: dto.scheduleId ?? null,
+      passportSeries: dto.passportSeries ?? null,
+      notes: dto.notes ?? null,
+    };
+
+    // STUDENT: login yaratilmaydi — User yozuvisiz, userId=null
+    if (personType === PersonType.STUDENT) {
+      const created = await this.employeeRepository.save(
+        this.employeeRepository.create({ ...baseFields, userId: null }),
+      );
+      return this.findOne(companyId, created.id);
+    }
+
+    if (!dto.credentials) {
+      throw AppException.validation('Xodim uchun login ma’lumotlari (credentials) majburiy');
+    }
     const email = dto.credentials.email?.trim().toLowerCase() || null;
     const phone = dto.credentials.phone?.trim() || null;
     if (!email && !phone) {
@@ -130,18 +185,6 @@ export class EmployeesService {
       dto.credentials.username?.trim().toLowerCase() ||
       (await this.generateUsername(dto.firstName, dto.lastName));
     await this.assertCredentialsUnique(username, email, phone);
-
-    const tabNumber = dto.tabNumber?.trim() || (await this.generateTabNumber(companyId));
-    if (
-      dto.tabNumber &&
-      (await this.employeeRepository.exists({
-        where: { companyId, tabNumber, deletedAt: IsNull() },
-      }))
-    ) {
-      throw AppException.conflict(`Tab raqami "${tabNumber}" allaqachon band`);
-    }
-
-    if (dto.scheduleId) await this.assertScheduleExists(companyId, dto.scheduleId);
 
     const generatedPassword = dto.credentials.password ? null : generatePassword(12);
     const password = dto.credentials.password ?? generatedPassword!;
@@ -160,25 +203,7 @@ export class EmployeesService {
       );
 
       const created = await manager.getRepository(Employee).save(
-        manager.getRepository(Employee).create({
-          companyId,
-          branchId: dto.branchId,
-          userId: user.id,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          middleName: dto.middleName ?? null,
-          birthDate: dto.birthDate ?? null,
-          gender: dto.gender ?? null,
-          position: dto.position ?? null,
-          department: dto.department ?? null,
-          tabNumber,
-          hiredAt: dto.hiredAt ?? null,
-          salaryType: dto.salaryType,
-          salaryAmount: dto.salaryAmount,
-          scheduleId: dto.scheduleId ?? null,
-          passportSeries: dto.passportSeries ?? null,
-          notes: dto.notes ?? null,
-        }),
+        manager.getRepository(Employee).create({ ...baseFields, userId: user.id }),
       );
 
       return created;
@@ -238,13 +263,17 @@ export class EmployeesService {
     employee.status = dto.status;
     if (dto.status === EmployeeStatus.FIRED) {
       employee.firedAt = dto.firedAt ?? new Date().toISOString().slice(0, 10);
-      await this.userRepository.update(
-        { id: employee.userId },
-        { isActive: false, refreshTokenHash: null },
-      );
+      if (employee.userId) {
+        await this.userRepository.update(
+          { id: employee.userId },
+          { isActive: false, refreshTokenHash: null },
+        );
+      }
     } else {
       employee.firedAt = null;
-      await this.userRepository.update({ id: employee.userId }, { isActive: true });
+      if (employee.userId) {
+        await this.userRepository.update({ id: employee.userId }, { isActive: true });
+      }
     }
     await this.employeeRepository.save(employee);
     return this.findOne(companyId, id);
@@ -255,9 +284,11 @@ export class EmployeesService {
     const employee = await this.getEntity(companyId, id);
     await this.dataSource.transaction(async (manager) => {
       await manager.getRepository(Employee).softDelete({ id: employee.id });
-      await manager
-        .getRepository(User)
-        .update({ id: employee.userId }, { isActive: false, refreshTokenHash: null });
+      if (employee.userId) {
+        await manager
+          .getRepository(User)
+          .update({ id: employee.userId }, { isActive: false, refreshTokenHash: null });
+      }
     });
     return { ok: true };
   }
@@ -539,8 +570,8 @@ export class EmployeesService {
     return `${padded}.${Date.now().toString(36)}`;
   }
 
-  /** Kompaniyadagi eng katta raqamdan keyingi bo'sh tab raqamini topadi (T-001 formatida) */
-  private async generateTabNumber(companyId: string): Promise<string> {
+  /** Kompaniyadagi eng katta raqamdan keyingi bo'sh tab raqamini topadi (T-001 / S-001) */
+  private async generateTabNumber(companyId: string, prefix: 'T' | 'S' = 'T'): Promise<string> {
     // Soft-o'chirilgan xodimlar raqami ham qayta ishlatilmasin
     const existing = await this.employeeRepository.find({
       where: { companyId },
@@ -549,12 +580,13 @@ export class EmployeesService {
     });
     let max = 0;
     for (const e of existing) {
-      const match = /(\d+)\s*$/.exec(e.tabNumber ?? '');
+      if (!e.tabNumber?.startsWith(`${prefix}-`)) continue;
+      const match = /(\d+)\s*$/.exec(e.tabNumber);
       if (match) max = Math.max(max, parseInt(match[1], 10));
     }
     let next = max + 1;
     for (;;) {
-      const candidate = `T-${String(next).padStart(3, '0')}`;
+      const candidate = `${prefix}-${String(next).padStart(3, '0')}`;
       const taken = await this.employeeRepository.exists({
         where: { companyId, tabNumber: candidate },
         withDeleted: true,
