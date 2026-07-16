@@ -7,6 +7,7 @@ import {
 } from '../../common/enums';
 import { Device } from '../../entities/device.entity';
 import { Employee } from '../../entities/employee.entity';
+import { ErrorCodes } from '../../common/constants/error-codes';
 
 describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
   let service: AttendanceService;
@@ -73,7 +74,9 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
       })),
     };
     embeddingRepository = { find: jest.fn(async () => [{ embedding: [0.1, 0.2] }]) };
-    redis = { get: jest.fn(async () => null), set: jest.fn(), del: jest.fn(async () => 1) };
+    // ioredis `SET ... NX` kalit yo'q bo'lsa 'OK', bor bo'lsa null qaytaradi —
+    // claimDebounce shu qiymatga tayanadi (default: muvaffaqiyatli claim).
+    redis = { get: jest.fn(async () => null), set: jest.fn(async () => 'OK'), del: jest.fn(async () => 1) };
     faceService = {
       identify: jest.fn(async () => ({
         matched: true,
@@ -169,6 +172,16 @@ describe('AttendanceService (kiosk debounce / mobile geofence)', () => {
       });
       const result = await service.kioskRecognize(device, Buffer.from('frame'));
       expect(result).toEqual({ recognized: false, reason: 'LIVENESS_FAILED' });
+      expect(eventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('atomik claim: bir vaqtdagi ikkinchi urinish event yozmaydi (SET NX null)', async () => {
+      // getDebounce null (tez-yo'l o'tadi), lekin atomik claim (SET NX) null
+      // qaytaradi — ya'ni boshqa parallel so'rov allaqachon egallagan.
+      redis.set.mockResolvedValue(null);
+      await expect(service.kioskRecognize(device, Buffer.from('frame'))).rejects.toMatchObject({
+        code: ErrorCodes.DEBOUNCE,
+      });
       expect(eventRepository.save).not.toHaveBeenCalled();
     });
   });

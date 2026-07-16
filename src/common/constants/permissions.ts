@@ -87,3 +87,20 @@ export function roleHasPermission(role: UserRole, permission: string): boolean {
   const granted = ROLE_PERMISSIONS[role] ?? [];
   return granted.includes('*') || granted.includes(permission as Permission);
 }
+
+/**
+ * Foydalanuvchining EFFEKTIV ruxsati (PermissionsGuard bilan bir xil mantiq):
+ * yangi tokenda payloaddagi `permissions` (custom rol) ustuvor; faqat eski
+ * (roleId'siz) tokenda enum-rol jadvaliga tushamiz. Controller ichида qo'lda
+ * tekshirilганda `roleHasPermission(user.role, ...)` ISHLATILMASIN — u custom
+ * rol olib tashlagan ruxsatni ko'rmay, jadval bo'yicha ruxsat berib yuboradi.
+ */
+export function userHasPermission(
+  user: { role: UserRole; permissions?: string[] | null },
+  permission: string,
+): boolean {
+  if (user.permissions) {
+    return user.permissions.includes('*') || user.permissions.includes(permission);
+  }
+  return roleHasPermission(user.role, permission);
+}

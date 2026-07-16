@@ -15,7 +15,7 @@ import {
   SubscriptionStatus,
   WorkDayStatus,
 } from '../../common/enums';
-import { addDaysToDateStr, dateStrInTz } from '../../common/utils/tz.util';
+import { addDaysToDateStr, dateStrInTz, zonedTimeToUtc } from '../../common/utils/tz.util';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -71,15 +71,22 @@ export class StatsService {
     const present =
       (byStatus[WorkDayStatus.PRESENT] ?? 0) + (byStatus[WorkDayStatus.LATE] ?? 0);
 
+    // "Ketganlar" — bugungi kunning oxirgi eventi CHECK_OUT bo'lgan xodimlar.
+    // ::date cast DB session timezone'ini (UTC) ishlatib, kompaniya tz'da
+    // hisoblangan `today` bilan mos kelmasdi (Toshkent +05'da tunги eventlar
+    // noto'g'ri kunga tushardi); todayStats kabi zonedTimeToUtc + >= ishlatamiz
+    // va o'quvchilarni (personType=STUDENT) chiqarib tashlaymiz.
+    const dayStart = zonedTimeToUtc(today, '00:00', timezone);
     const checkedOutRows: { count: string }[] = await this.dataSource.query(
       `SELECT COUNT(*) AS count FROM (
          SELECT DISTINCT ON (ae."employeeId") ae."type"
          FROM attendance_events ae
          JOIN employees e ON e.id = ae."employeeId"
-         WHERE e."companyId" = $1 AND ae."timestamp"::date = $2::date
+         WHERE e."companyId" = $1 AND ae."timestamp" >= $2
+           AND e."personType" = 'EMPLOYEE'
          ORDER BY ae."employeeId", ae."timestamp" DESC
        ) t WHERE t."type" = 'CHECK_OUT'`,
-      [companyId, today],
+      [companyId, dayStart],
     );
 
     // Haftalik grafik (oxirgi 7 kun)
@@ -132,7 +139,10 @@ export class StatsService {
         total,
         present,
         late: byStatus[WorkDayStatus.LATE] ?? 0,
-        absent: Math.max(0, total - present),
+        // Kelmaganlar = bugun ish kuni bo'lib ABSENT bo'lganlar (haftalik
+        // grafik bilan izchil). Ilgari `total - present` dam olish/ta'tildagi
+        // xodimlarni ham "kelmagan" deb ko'rsatib, sonni oshirib yubordi.
+        absent: byStatus[WorkDayStatus.ABSENT] ?? 0,
         checkedOut: Number(checkedOutRows[0]?.count ?? 0),
       },
       studentsTotal,

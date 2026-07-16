@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { SkipThrottle } from '@nestjs/throttler';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import {
   IsBoolean,
   IsIn,
@@ -147,9 +147,31 @@ export class DevicesController {
     return this.devicesService.createPairingCode(user.companyId!, dto);
   }
 
+  @Get('pairing')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.DEVICES_MANAGE)
+  @ApiOperation({
+    summary:
+      "Faol (hali ishlatilmagan) pairing kodlari — dialog yopilsa ham havola yo'qolmaydi",
+  })
+  async activePairings(@CurrentUser() user: RequestUser) {
+    return this.devicesService.listActivePairings(user.companyId!);
+  }
+
+  @Delete('pairing/:code')
+  @ApiBearerAuth()
+  @Permissions(PERMISSIONS.DEVICES_MANAGE)
+  @ApiOperation({ summary: 'Faol pairing kodini bekor qilish' })
+  async cancelPairing(@CurrentUser() user: RequestUser, @Param('code') code: string) {
+    return this.devicesService.cancelPairing(user.companyId!, code);
+  }
+
   @Post('pair')
   @Public()
   @HttpCode(200)
+  // 6-xonali kod (10^6) brute-force qilinmasin — IP bo'yicha qat'iy limit
+  // (global 100/min emas). TTL 600s bo'lgan kod uchun bu amalda yopiq.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Kioskni kod bilan ulash → deviceToken' })
   async pair(@Body() dto: PairDto) {
     return this.devicesService.pair(dto.code, dto.companySlug);

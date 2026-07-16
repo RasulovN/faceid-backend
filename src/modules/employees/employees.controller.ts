@@ -23,7 +23,7 @@ import {
   UpdateEmployeeStatusDto,
 } from './dto/employee.dtos';
 import { CurrentUser, Permissions, RequestUser, SkipEnvelope } from '../../common/decorators';
-import { PERMISSIONS, roleHasPermission } from '../../common/constants/permissions';
+import { PERMISSIONS, userHasPermission } from '../../common/constants/permissions';
 import { PersonType, UserRole } from '../../common/enums';
 import { AppException } from '../../common/exceptions/app.exception';
 import { parseMultipart } from '../../common/utils/multipart.util';
@@ -160,7 +160,7 @@ export class EmployeesController {
   ) {
     if (user.role === UserRole.EMPLOYEE) {
       await this.employeesService.assertOwnEmployee(user.companyId!, id, user.id);
-    } else if (!roleHasPermission(user.role, PERMISSIONS.EMPLOYEES_READ)) {
+    } else if (!userHasPermission(user, PERMISSIONS.EMPLOYEES_READ)) {
       throw AppException.forbidden('Sizda employees.read ruxsati yo‘q');
     }
     return this.employeesService.attendance(user.companyId!, id, query);

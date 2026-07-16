@@ -7,12 +7,19 @@ import { Branch } from '../../entities/branch.entity';
 import { Company } from '../../entities/company.entity';
 import { Device } from '../../entities/device.entity';
 import { Employee } from '../../entities/employee.entity';
+import { Group } from '../../entities/group.entity';
 import { Payment } from '../../entities/payment.entity';
 import { Subscription } from '../../entities/subscription.entity';
 import { Tariff } from '../../entities/tariff.entity';
 import { User } from '../../entities/user.entity';
 import { AppException } from '../../common/exceptions/app.exception';
-import { CompanyStatus, EmployeeStatus, PaymeState, SubscriptionStatus } from '../../common/enums';
+import {
+  CompanyStatus,
+  EmployeeStatus,
+  PaymeState,
+  PersonType,
+  SubscriptionStatus,
+} from '../../common/enums';
 import { MailService } from '../mail/mail.service';
 import { Paginated } from '../../common/dto/pagination.dto';
 import {
@@ -31,6 +38,7 @@ export class CompaniesService {
     @InjectRepository(Company) private readonly companyRepository: Repository<Company>,
     @InjectRepository(Branch) private readonly branchRepository: Repository<Branch>,
     @InjectRepository(Employee) private readonly employeeRepository: Repository<Employee>,
+    @InjectRepository(Group) private readonly groupRepository: Repository<Group>,
     @InjectRepository(Device) private readonly deviceRepository: Repository<Device>,
     @InjectRepository(Subscription) private readonly subscriptionRepository: Repository<Subscription>,
     @InjectRepository(Payment) private readonly paymentRepository: Repository<Payment>,
@@ -63,6 +71,16 @@ export class CompaniesService {
           where: {
             companyId: company.id,
             status: Not(EmployeeStatus.FIRED),
+            personType: PersonType.EMPLOYEE,
+            deletedAt: IsNull(),
+          },
+        }),
+        // EDUCATION kompaniyalar ro'yxatida o'quvchilar soni ham ko'rinadi
+        studentCount: await this.employeeRepository.count({
+          where: {
+            companyId: company.id,
+            status: Not(EmployeeStatus.FIRED),
+            personType: PersonType.STUDENT,
             deletedAt: IsNull(),
           },
         }),
@@ -199,12 +217,34 @@ export class CompaniesService {
     since.setHours(0, 0, 0, 0);
     since.setDate(since.getDate() - 13);
 
-    const [branchesCount, employeesCount, devicesCount, attendanceRows, paymentRows] =
-      await Promise.all([
+    const [
+      branchesCount,
+      employeesCount,
+      studentsCount,
+      groupsCount,
+      devicesCount,
+      attendanceRows,
+      paymentRows,
+    ] = await Promise.all([
         this.branchRepository.count({ where: { companyId: id } }),
         this.employeeRepository.count({
-          where: { companyId: id, status: Not(EmployeeStatus.FIRED), deletedAt: IsNull() },
+          where: {
+            companyId: id,
+            status: Not(EmployeeStatus.FIRED),
+            personType: PersonType.EMPLOYEE,
+            deletedAt: IsNull(),
+          },
         }),
+        // EDUCATION: o'quvchilar va guruhlar soni (BUSINESS'da 0 bo'lib qaytadi)
+        this.employeeRepository.count({
+          where: {
+            companyId: id,
+            status: Not(EmployeeStatus.FIRED),
+            personType: PersonType.STUDENT,
+            deletedAt: IsNull(),
+          },
+        }),
+        this.groupRepository.count({ where: { companyId: id, archived: false } }),
         this.deviceRepository.count({ where: { companyId: id } }),
         // Kunlik davomat hodisalari soni (filial orqali kompaniyaga bog'lanadi).
         this.attendanceEventRepository
@@ -231,6 +271,8 @@ export class CompaniesService {
     return {
       branchesCount,
       employeesCount,
+      studentsCount,
+      groupsCount,
       devicesCount,
       attendanceChart: attendanceRows.map((r) => ({ date: r.date, count: Number(r.count) })),
       paymentsChart: paymentRows.map((r) => ({ month: r.month, amount: Number(r.amount) })),

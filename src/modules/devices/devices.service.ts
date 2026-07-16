@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import Redis from 'ioredis';
 import { Branch } from '../../entities/branch.entity';
 import { Company } from '../../entities/company.entity';
@@ -22,6 +22,15 @@ interface PairingPayload {
   name: string;
   direction: DeviceDirection;
   manualMode: boolean;
+}
+
+/** Kompaniya indeksidagi faol kod yozuvi — panel istalgan payt qayta ko'rsatadi */
+interface PairingIndexEntry {
+  name: string;
+  branchId: string;
+  direction: DeviceDirection;
+  manualMode: boolean;
+  expiresAt: string;
 }
 
 @Injectable()
@@ -120,11 +129,71 @@ export class DevicesService {
       // Qo'lda rejim faqat BOTH uchun ma'noli — boshqa yo'nalishda e'tiborsiz
       manualMode: dto.manualMode === true && dto.direction === DeviceDirection.BOTH,
     };
+    const expiresAt = new Date(Date.now() + PAIRING_TTL_SECONDS * 1000).toISOString();
     await this.redis.set(this.pairKey(code), JSON.stringify(payload), 'EX', PAIRING_TTL_SECONDS);
-    return {
-      code,
-      expiresAt: new Date(Date.now() + PAIRING_TTL_SECONDS * 1000).toISOString(),
+
+    // Kompaniya indeksi: dialog/brauzer yopilsa ham panel faol kodlarni qayta ko'rsatadi
+    const entry: PairingIndexEntry = {
+      name: payload.name,
+      branchId: payload.branchId,
+      direction: payload.direction,
+      manualMode: payload.manualMode,
+      expiresAt,
     };
+    await this.redis.hset(this.pairIndexKey(companyId), code, JSON.stringify(entry));
+    await this.redis.expire(this.pairIndexKey(companyId), PAIRING_TTL_SECONDS + 60);
+
+    return { code, expiresAt };
+  }
+
+  /**
+   * Hali ishlatilmagan (faol) pairing kodlari — dialog yopilib qolsa ham
+   * havola/kod yo'qolmaydi: panel shu ro'yxatdan qayta ko'radi.
+   */
+  async listActivePairings(companyId: string) {
+    const indexKey = this.pairIndexKey(companyId);
+    const raw = await this.redis.hgetall(indexKey);
+    const items: Array<PairingIndexEntry & { code: string }> = [];
+
+    for (const [code, json] of Object.entries(raw)) {
+      let entry: PairingIndexEntry;
+      try {
+        entry = JSON.parse(json) as PairingIndexEntry;
+      } catch {
+        await this.redis.hdel(indexKey, code);
+        continue;
+      }
+      // Muddati o'tgan yoki allaqachon ishlatilgan (pair kaliti yo'q) → indeksdan tozalash
+      const alive =
+        new Date(entry.expiresAt).getTime() > Date.now() &&
+        (await this.redis.exists(this.pairKey(code))) === 1;
+      if (!alive) {
+        await this.redis.hdel(indexKey, code);
+        continue;
+      }
+      items.push({ code, ...entry });
+    }
+
+    // Filial nomlarini bitta so'rovda qo'shamiz
+    const branchIds = [...new Set(items.map((i) => i.branchId))];
+    const branches = branchIds.length
+      ? await this.branchRepository.find({ where: { id: In(branchIds), companyId } })
+      : [];
+    const branchName = new Map(branches.map((b) => [b.id, b.name]));
+
+    return items
+      .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt))
+      .map((i) => ({ ...i, branchName: branchName.get(i.branchId) ?? null }));
+  }
+
+  /** Faol kodni bekor qilish — kod darhol yaroqsiz bo'ladi */
+  async cancelPairing(companyId: string, code: string): Promise<{ ok: boolean }> {
+    const indexKey = this.pairIndexKey(companyId);
+    const entry = await this.redis.hget(indexKey, code);
+    if (!entry) throw AppException.notFound('Faol kod topilmadi');
+    await this.redis.del(this.pairKey(code));
+    await this.redis.hdel(indexKey, code);
+    return { ok: true };
   }
 
   /** Kiosk kod bilan ulanadi (public) */
@@ -154,6 +223,8 @@ export class DevicesService {
     if (claimed === 0) {
       throw AppException.notFound('Pairing kodi yaroqsiz yoki muddati tugagan');
     }
+    // Ishlatilgan kod paneldagi faol kodlar ro'yxatidan ham darhol yo'qoladi
+    await this.redis.hdel(this.pairIndexKey(payload.companyId), code);
 
     const device = await this.deviceRepository.save(
       this.deviceRepository.create({
@@ -219,5 +290,9 @@ export class DevicesService {
 
   private pairKey(code: string): string {
     return `device:pair:${code}`;
+  }
+
+  private pairIndexKey(companyId: string): string {
+    return `device:pair:index:${companyId}`;
   }
 }

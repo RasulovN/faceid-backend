@@ -66,6 +66,7 @@ export class AuthController {
   @Public()
   @SkipAudit()
   @HttpCode(200)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Email tasdiqlash' })
   async verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.authService.verifyEmail(dto);

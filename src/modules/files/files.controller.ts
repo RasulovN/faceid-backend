@@ -6,6 +6,10 @@ import { Permissions, CurrentUser, RequestUser } from '../../common/decorators';
 import { PERMISSIONS } from '../../common/constants/permissions';
 import { MinioService } from './minio.service';
 
+/** Ruxsat etilgan rasm turlari — bucketlar public GET, shu sabab HTML/JS
+ *  yuklab, ishonchli domenda saqlangan XSS'ni oldini olish uchun cheklaymiz. */
+const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+
 class PresignDto {
   @IsIn(['employees', 'snapshots'])
   bucket: 'employees' | 'snapshots';
@@ -14,9 +18,8 @@ class PresignDto {
   @MaxLength(255)
   fileName: string;
 
-  @IsString()
-  @MaxLength(100)
-  contentType: string;
+  @IsIn(ALLOWED_CONTENT_TYPES)
+  contentType: (typeof ALLOWED_CONTENT_TYPES)[number];
 }
 
 @ApiTags('files')

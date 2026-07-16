@@ -91,6 +91,11 @@ export class UsersService {
     ) {
       throw AppException.forbidden('Kompaniya egasining rolini o‘zgartirib bo‘lmaydi');
     }
+    // Faqat superadmin COMPANY_OWNER tayinlashi mumkin — aks holda users.manage'ga
+    // ega oddiy admin o'zini/hamkasbini egaga ko'tarib, ['*'] (cheksiz) huquq olardi.
+    if (dto.role === UserRole.COMPANY_OWNER && actor.role !== UserRole.SUPERADMIN) {
+      throw AppException.forbidden('Kompaniya egasi rolini faqat superadmin tayinlaydi');
+    }
     if (dto.role) user.role = dto.role;
     if (dto.roleId !== undefined) {
       await this.assertRoleInCompany(dto.roleId, user.companyId);

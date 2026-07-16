@@ -27,7 +27,7 @@ import { FastifyReply } from 'fastify';
 import { PayrollListQuery, PayrollService } from './payroll.service';
 import { PayrollExportService } from './payroll-export.service';
 import { CurrentUser, Permissions, RequestUser, SkipEnvelope } from '../../common/decorators';
-import { PERMISSIONS, roleHasPermission } from '../../common/constants/permissions';
+import { PERMISSIONS, userHasPermission } from '../../common/constants/permissions';
 import { PayrollAdjustmentType, PayrollStatus, UserRole } from '../../common/enums';
 import { AppException } from '../../common/exceptions/app.exception';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -138,7 +138,7 @@ export class PayrollController {
     if (user.role === UserRole.EMPLOYEE) {
       return this.payrollService.findAll(user.companyId!, query, user.id);
     }
-    if (!roleHasPermission(user.role, PERMISSIONS.PAYROLL_READ)) {
+    if (!userHasPermission(user, PERMISSIONS.PAYROLL_READ)) {
       throw AppException.forbidden('Sizda payroll.read ruxsati yo‘q');
     }
     return this.payrollService.findAll(user.companyId!, query);

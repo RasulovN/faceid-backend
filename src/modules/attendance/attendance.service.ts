@@ -614,8 +614,15 @@ export class AttendanceService {
     if (query.type) where.type = query.type;
     if (query.source) where.source = query.source;
     if (query.from || query.to) {
-      const from = query.from ? new Date(query.from) : new Date(0);
-      const to = query.to ? new Date(`${query.to}T23:59:59.999Z`) : new Date();
+      // Kun chegaralari kompaniya timezone'ida hisoblanadi (ilgari UTC'ga
+      // bog'langan `new Date('yyyy-MM-dd')` / `...T23:59:59.999Z` ishlatilib,
+      // Toshkent +05'da chegaradagi eventlar 5 soatgacha noto'g'ri kunga
+      // tushardi). Boshqa barcha kun-chegara hisoblari kabi zonedTimeToUtc.
+      const timezone = await this.companyTimezone(companyId);
+      const from = query.from ? zonedTimeToUtc(query.from, '00:00', timezone) : new Date(0);
+      const to = query.to
+        ? new Date(zonedTimeToUtc(query.to, '00:00', timezone).getTime() + 24 * 60 * 60 * 1000 - 1)
+        : new Date();
       where.timestamp = Between(from, to);
     }
     const [items, total] = await this.eventRepository.findAndCount({
@@ -638,6 +645,10 @@ export class AttendanceService {
       where: {
         companyId,
         deletedAt: IsNull(),
+        // Faqat xodimlar — o'quvchilarda (STUDENT) work_days bo'lmaydi, ular
+        // kunlik davomat ro'yxatiga workDay:null bilan chiqib qolardi
+        // (boshqa agregatlar kabi personType filtri qo'shildi).
+        personType: PersonType.EMPLOYEE,
         status: In([EmployeeStatus.ACTIVE, EmployeeStatus.VACATION]),
         ...(query.branchId ? { branchId: query.branchId } : {}),
       },
@@ -969,7 +980,11 @@ export class AttendanceService {
       total,
       present,
       late: byStatus[WorkDayStatus.LATE] ?? 0,
-      absent: Math.max(0, total - present),
+      // Kelmaganlar = bugun ish kuni bo'lib (work_day bor) ABSENT bo'lganlar.
+      // Ilgari `total - present` edi — dam olish/ta'tildagi va bugun jadvalда
+      // bo'lmagan xodimlarni ham "kelmagan" deb sanardi (haftalik grafik esa
+      // ABSENT statusini ishlatadi — endi ikkovi izchil).
+      absent: byStatus[WorkDayStatus.ABSENT] ?? 0,
       checkedOut: Number(checkedOutRow[0]?.count ?? 0),
     };
   }
@@ -1003,6 +1018,19 @@ export class AttendanceService {
         .catch(() => null);
     }
 
+    // ATOMIK debounce claim — event YOZISHDAN OLDIN. Yuqoridagi getDebounce
+    // tekshiruvlari faqat "tez yo'l" (60s ichida takror); ular check-then-act
+    // bo'lgani uchun bir vaqtda kelgan ikki kadr (kiosk ~50ms oralab, yoki
+    // mobil ikki marta bosish) ikkalasi ham null ko'rib IKKI event yozardi.
+    // SET NX bilan faqat bittasi yozadi; qolgani DEBOUNCE oladi (dublikat yo'q).
+    if (!params.skipDebounce && !(await this.claimDebounce(params.employee.id))) {
+      throw new AppException(
+        ErrorCodes.DEBOUNCE,
+        'Yaqinda davomat qayd etilgan. Biroz kuting.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
     const event = await this.eventRepository.save(
       this.eventRepository.create({
         employeeId: params.employee.id,
@@ -1024,6 +1052,8 @@ export class AttendanceService {
     );
 
     if (!params.skipDebounce) {
+      // Claim'dagi placeholder'ni haqiqiy event ma'lumoti bilan almashtiramiz
+      // (tez-yo'l dublikat javobi shu qiymatdan eventId/type ko'rsatadi).
       await this.setDebounce(params.employee.id, {
         eventId: event.id,
         type: event.type,
@@ -1098,8 +1128,14 @@ export class AttendanceService {
     if (direction === DeviceDirection.OUT) return AttendanceEventType.CHECK_OUT;
     const today = dateStrInTz(new Date(), timezone);
     const dayStart = zonedTimeToUtc(today, '00:00', timezone);
+    // Yarim tundan 6 soat oldinga ham qaraymiz: tungi smena xodimi kechqurun
+    // (masalan 22:00) CHECK_IN qilib, ertalab (06:00) chiqishга kelganda,
+    // faqat "bugungi" oynada oldingi kunги CHECK_IN ko'rinmay, yana CHECK_IN
+    // yozilib qolar edi (bir juft ochiq qolardi). Lookback workday hisobi
+    // bilan izchil (NIGHT_SHIFT_LOOKBACK = 6 soat).
+    const lookbackStart = new Date(dayStart.getTime() - 6 * 60 * 60_000);
     const lastEvent = await this.eventRepository.findOne({
-      where: { employeeId, timestamp: Between(dayStart, new Date()) },
+      where: { employeeId, timestamp: Between(lookbackStart, new Date()) },
       order: { timestamp: 'DESC' },
     });
     return lastEvent?.type === AttendanceEventType.CHECK_IN
@@ -1129,12 +1165,31 @@ export class AttendanceService {
 
   private async getDebounce(employeeId: string): Promise<DebounceValue | null> {
     const raw = await this.redis.get(this.debounceKey(employeeId));
-    return raw ? (JSON.parse(raw) as DebounceValue) : null;
+    if (!raw) return null;
+    const value = JSON.parse(raw) as DebounceValue;
+    // Placeholder (claim qilingan, lekin event hali saqlanmagan) — "tez yo'l"
+    // dublikat javobida bo'sh maydonlar ko'rsatmaslik uchun null deb qaraymiz;
+    // saveEventAndRecalc'dagi atomik claim baribir dublikatni to'xtatadi.
+    return value.eventId ? value : null;
   }
 
   private async setDebounce(employeeId: string, value: DebounceValue): Promise<void> {
     const ttl = Number(this.config.get('ATTENDANCE_DEBOUNCE_SECONDS') ?? 60);
     await this.redis.set(this.debounceKey(employeeId), JSON.stringify(value), 'EX', ttl);
+  }
+
+  /**
+   * Atomik debounce egallash (SET NX): faqat birinchi so'rov `true` oladi,
+   * bir vaqtda kelgan qolganlari `false` — shu bilan bir vaqtdagi ikki
+   * kadr/urinish ikki event yozib qo'yishining oldi olinadi. Placeholder
+   * event saqlangach setDebounce bilan haqiqiy qiymatga almashtiriladi.
+   */
+  private async claimDebounce(employeeId: string): Promise<boolean> {
+    const ttl = Number(this.config.get('ATTENDANCE_DEBOUNCE_SECONDS') ?? 60);
+    // Bo'sh eventId — placeholder belgisi (getDebounce uni null deb qaraydi)
+    const placeholder = JSON.stringify({ eventId: '', type: '', timestamp: '' });
+    const res = await this.redis.set(this.debounceKey(employeeId), placeholder, 'EX', ttl, 'NX');
+    return res === 'OK';
   }
 
   private debounceKey(employeeId: string): string {
